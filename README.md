@@ -26,6 +26,7 @@ It finds the place from your Wi-Fi router. A widget on the desktop shows the bat
 - [Project layout](#project-layout)
 - [Roadmap](#roadmap)
 - [Third-party parts](#third-party-parts)
+- [License](#license)
 
 ## Features
 
@@ -181,3 +182,9 @@ It uses events instead of polls, so it uses less battery. See [docs/development/
 - [Bun](https://github.com/oven-sh/bun), MIT license. The disk image includes it.
 - `smc` from the [battery](https://github.com/actuallymentor/battery) project, built from [smcFanControl](https://github.com/hholtmann/smcFanControl). GNU GPL. The disk image includes it.
 - [React](https://github.com/facebook/react) 18.3.1 and [Babel standalone](https://github.com/babel/babel) 7.24.7, MIT license. They are in `widget/standalone/vendor`.
+
+## License
+
+ChargeGuard is free software under the [GNU General Public License v3.0](LICENSE).
+You can copy, change, and share it. If you share a changed version, you must share its source code under the same license.
+ChargeGuard comes with no warranty. It changes how your Mac charges. Use it at your own risk.
