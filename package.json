@@ -1,6 +1,7 @@
 {
   "name": "chargeguard",
   "private": true,
+  "license": "GPL-3.0-only",
   "type": "module",
   "scripts": {
     "test": "bun test",
