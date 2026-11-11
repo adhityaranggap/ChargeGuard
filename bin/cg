@@ -1,0 +1,21 @@
+#!/bin/bash
+# ChargeGuard command shim. Find the real folder of this file, then start the CLI with Bun.
+# In the repo, the app is one level up. In ~/.chargeguard/bin, the app is in ../app.
+src="${BASH_SOURCE[0]}"
+while [ -L "$src" ]; do
+  d="$(cd -P "$(dirname "$src")" && pwd)"
+  src="$(readlink "$src")"
+  case "$src" in /*) ;; *) src="$d/$src" ;; esac
+done
+here="$(cd -P "$(dirname "$src")" && pwd)"
+if [ -f "$here/../src/cli.ts" ]; then
+  app="$here/.."
+else
+  app="$here/../app"
+fi
+# Use the Bun from the installer first. Then the user's own Bun.
+for bun in "$app/runtime/bun" "$HOME/.bun/bin/bun" "$(command -v bun 2>/dev/null)"; do
+  [ -n "$bun" ] && [ -x "$bun" ] && exec "$bun" "$app/src/cli.ts" "$@"
+done
+echo "cg: Bun was not found. Install ChargeGuard again." >&2
+exit 127

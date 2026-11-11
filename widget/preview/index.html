@@ -1,0 +1,167 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>ChargeGuard widget preview</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; font-family: -apple-system, "SF Pro Text", system-ui, sans-serif; }
+  body { background: radial-gradient(1200px 800px at 20% 85%, #3a6df0 0%, transparent 60%),
+                     radial-gradient(900px 700px at 85% 20%, #e0577b 0%, transparent 60%),
+                     linear-gradient(135deg, #1b2a49 0%, #3c2a63 50%, #7a3b69 100%); }
+  body.light { background: radial-gradient(1200px 800px at 20% 85%, #ffe29a 0%, transparent 60%),
+                           radial-gradient(900px 700px at 85% 20%, #b8e1ff 0%, transparent 60%),
+                           linear-gradient(135deg, #f7f3e8 0%, #dfe8f5 100%); }
+  #bar { position: fixed; top: 0; left: 0; right: 0; z-index: 100; display: flex; flex-wrap: wrap; gap: 12px; align-items: center;
+         padding: 8px 16px; background: rgba(0,0,0,0.55); color: #fff; font-size: 12px; }
+  #bar label { display: inline-flex; gap: 6px; align-items: center; }
+  #bar select, #bar input[type=text] { font: inherit; padding: 2px 4px; }
+  #bar input[type=text] { width: 220px; }
+  #log { position: fixed; top: 44px; right: 16px; z-index: 100; max-width: 460px; max-height: 40vh; overflow: auto; margin: 0; padding: 8px;
+         background: rgba(0,0,0,0.6); color: #9f9; font: 11px ui-monospace, Menlo, monospace; border-radius: 8px; white-space: pre-wrap; }
+  #log:empty { display: none; }
+  #stage { position: fixed; inset: 0; }
+  #err { position: fixed; top: 60px; left: 16px; right: 16px; z-index: 101; color: #fff; background: #b00020; padding: 8px 12px; border-radius: 8px; display: none; white-space: pre-wrap; font: 12px ui-monospace, Menlo, monospace; }
+</style>
+</head>
+<body>
+<div id="bar">
+  <strong>ChargeGuard preview</strong>
+  <label>Fixture <select id="fixture"></select></label>
+  <label>Theme <select id="theme"><option>dark</option><option>light</option></select></label>
+  <label><input type="checkbox" id="drawer"> Settings open</label>
+  <label>Fake time <input type="text" id="now" placeholder="2026-11-11T15:45:00+07:00"></label>
+  <label><input type="checkbox" id="freeze"> Freeze clock</label>
+  <button id="apply">Apply</button>
+</div>
+<pre id="log"></pre>
+<div id="err"></div>
+<div id="stage"></div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.3.1/umd/react.development.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.3.1/umd/react-dom.development.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.24.7/babel.min.js"></script>
+<script src="./uebersicht-shim.js"></script>
+<script>
+(function () {
+  var FIXTURES = ["home-holding", "home-charging", "home-just-plugged", "office-before-topup", "office-topup",
+    "office-slow-charger", "away-first-time", "heat", "discharging", "calibrating", "paused", "no-network",
+    "setup-needed", "stale", "empty"];
+  var q = new URLSearchParams(location.search);
+  var fixture = q.get("fixture") || "home-holding";
+  var theme = q.get("theme") === "light" ? "light" : "dark";
+  var drawer = q.get("drawer") === "1";
+  var freeze = q.get("freeze") === "1";
+  var nowParam = q.get("now") || "";
+
+  // Controls.
+  var sel = document.getElementById("fixture");
+  FIXTURES.forEach(function (f) {
+    var o = document.createElement("option");
+    o.value = o.textContent = f;
+    if (f === fixture) o.selected = true;
+    sel.appendChild(o);
+  });
+  document.getElementById("theme").value = theme;
+  document.getElementById("drawer").checked = drawer;
+  document.getElementById("freeze").checked = freeze;
+  document.getElementById("now").value = nowParam;
+  if (theme === "light") document.body.classList.add("light");
+  function go() {
+    var p = new URLSearchParams();
+    p.set("fixture", sel.value);
+    p.set("theme", document.getElementById("theme").value);
+    if (document.getElementById("drawer").checked) p.set("drawer", "1");
+    if (document.getElementById("freeze").checked) p.set("freeze", "1");
+    var n = document.getElementById("now").value.trim();
+    if (n) p.set("now", n);
+    location.search = p.toString();
+  }
+  document.getElementById("apply").onclick = go;
+  sel.onchange = go;
+  document.getElementById("theme").onchange = go;
+
+  // Command log.
+  var logEl = document.getElementById("log");
+  window.addEventListener("cg-run", function (e) {
+    logEl.textContent += e.detail + "\n";
+    logEl.scrollTop = logEl.scrollHeight;
+  });
+
+  function fail(err) {
+    var box = document.getElementById("err");
+    box.style.display = "block";
+    box.textContent = "Preview error: " + (err && err.stack ? err.stack : err);
+    console.error(err);
+  }
+
+  var fixtureUrl = "../../tests/fixtures/status-" + fixture + ".json";
+  var fixtureReq = fixture === "empty" ? Promise.resolve("{}") : fetch(fixtureUrl).then(function (r) {
+    if (!r.ok) throw new Error("Fixture not found: " + fixtureUrl);
+    return r.text();
+  });
+
+  Promise.all([fixtureReq, fetch("../chargeguard.widget/index.jsx").then(function (r) {
+    if (!r.ok) throw new Error("Widget source not found.");
+    return r.text();
+  })]).then(function (res) {
+    var fixtureText = res[0];
+    var source = res[1];
+    var fixtureObj = JSON.parse(fixtureText);
+
+    // Fake clock. Default: 2 s after the fixture time. The stale fixture is 10 min later.
+    var t0 = Date.now();
+    var base = Date.now();
+    if (nowParam) base = Date.parse(nowParam);
+    else if (fixtureObj.updatedAt) base = Date.parse(fixtureObj.updatedAt) + (fixture === "stale" ? 10 * 60000 : 2000);
+    Object.defineProperty(window, "__CG_NOW__", {
+      configurable: true,
+      get: function () { return freeze ? base : base + (Date.now() - t0); }
+    });
+    window.__CG_THEME__ = theme;
+    window.__CG_DRAWER__ = drawer;
+
+    // Transform the widget source to CommonJS.
+    var out = Babel.transform(source, {
+      filename: "index.jsx",
+      presets: ["react", ["env", { modules: "commonjs", targets: { chrome: "100" } }]]
+    }).code;
+
+    var shim = window.__UEBERSICHT_SHIM__;
+    function req(name) {
+      if (name === "uebersicht") return shim;
+      throw new Error("Unknown module: " + name);
+    }
+    var mod = { exports: {} };
+    new Function("module", "exports", "require", out)(mod, mod.exports, req);
+    var w = mod.exports;
+
+    // Tiny Übersicht host.
+    var React = window.React;
+    var feed = function () {
+      // Keep the status fresh, except for the stale fixture.
+      if (fixture === "stale" || fixture === "empty") return fixtureText;
+      var o = JSON.parse(fixtureText);
+      o.updatedAt = new Date(window.__CG_NOW__).toISOString();
+      return JSON.stringify(o);
+    };
+    function Host() {
+      // Übersicht calls updateState(event, previousState). React calls reducer(state, action).
+      var pair = React.useReducer(function (s, a) { return w.updateState(a, s); }, w.initialState);
+      var state = pair[0];
+      var dispatch = pair[1];
+      React.useEffect(function () {
+        dispatch({ type: "UB/COMMAND_RAN", output: feed() });
+        var id = setInterval(function () {
+          dispatch({ type: "UB/COMMAND_RAN", output: feed() });
+        }, w.refreshFrequency || 2000);
+        return function () { clearInterval(id); };
+      }, []);
+      return React.createElement("div", { className: w.className }, w.render(state, dispatch));
+    }
+    ReactDOM.createRoot(document.getElementById("stage")).render(React.createElement(Host));
+  }).catch(fail);
+})();
+</script>
+</body>
+</html>
