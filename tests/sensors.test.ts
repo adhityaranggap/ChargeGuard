@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { parseBattLimit } from "../src/helper";
+import { SMC_BLOCKED, explainHelperError, parseBattLimit } from "../src/helper";
 import { parseArp, parseDefaultRoute } from "../src/net";
 import { parseAc, parseBatteryPower, parseBattery, parseClamshell, parsePmsetPercent } from "../src/sensors";
 import { parseSmcFloat } from "../src/smc";
@@ -174,5 +174,18 @@ destination: default
     expect(parseArp("? (192.168.100.1) at 9c:71:3a:40:db:9f on en0 ifscope [ethernet]")).toBe("9c:71:3a:40:db:9f");
     expect(parseArp("? (192.168.100.1) at (incomplete) on en0 ifscope [ethernet]")).toBeNull();
     expect(parseArp("192.168.100.9 (192.168.100.9) -- no entry")).toBeNull();
+  });
+});
+
+describe("explainHelperError", () => {
+  test("a blocked smc gives a plain message", () => {
+    expect(explainHelperError("/usr/local/libexec/chargeguard/cg-helper: line 30: 123 Killed: 9", 137)).toBe(SMC_BLOCKED);
+    expect(explainHelperError("", 137)).toBe(SMC_BLOCKED);
+  });
+  test("a missing sudo rule gives a plain message", () => {
+    expect(explainHelperError("sudo: a password is required", 1)).toContain("helper rule is missing");
+  });
+  test("other errors give null", () => {
+    expect(explainHelperError("cg-helper: limit must be 10..100", 2)).toBeNull();
   });
 });

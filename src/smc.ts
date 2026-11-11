@@ -7,6 +7,8 @@ export const TEMP_KEYS = ["TB0T", "TB1T", "TB2T"] as const;
 export interface RunResult {
   ok: boolean;
   code: number | null;
+  /** Signal that stopped the child, for example "SIGKILL". null if it exited. */
+  signal: string | null;
   out: string;
   err: string;
 }
@@ -18,11 +20,14 @@ export function runCmd(cmd: string[], timeoutMs = 5000): RunResult {
     return {
       ok: r.exitCode === 0,
       code: r.exitCode,
+      // A timeout also stops the child with a signal. Report it as no signal, so that only
+      // a kill from outside, for example by macOS, shows here.
+      signal: r.exitedDueToTimeout ? null : (r.signalCode ?? null),
       out: r.stdout ? r.stdout.toString() : "",
       err: r.stderr ? r.stderr.toString() : "",
     };
   } catch (e) {
-    return { ok: false, code: null, out: "", err: String(e) };
+    return { ok: false, code: null, signal: null, out: "", err: String(e) };
   }
 }
 
@@ -61,9 +66,17 @@ export function getTempKey(): string | null {
   return lastKey;
 }
 
+// True after macOS kills smc. A quarantined smc gets "Apple could not verify smc", and each
+// run shows the dialog again. Stop the reads until the daemon restarts. The installer restarts it.
+let smcBlocked = false;
+
+export function isSmcBlocked(): boolean {
+  return smcBlocked;
+}
+
 /** Read the battery temperature in degrees C. Return the highest value of all keys. */
 export function readTemp(): number | null {
-  if (!existsSync(SMC_PATH)) {
+  if (smcBlocked || !existsSync(SMC_PATH)) {
     lastKey = null;
     return null;
   }
@@ -71,6 +84,12 @@ export function readTemp(): number | null {
   let bestKey: string | null = null;
   for (const key of TEMP_KEYS) {
     const r = runCmd([SMC_PATH, "-k", key, "-r"], 3000);
+    // A process killed by a signal has no exit code. macOS kills a blocked smc with signal 9.
+    if (r.signal === "SIGKILL") {
+      smcBlocked = true;
+      lastKey = null;
+      return null;
+    }
     if (!r.ok && !r.out) continue;
     const v = parseSmcFloat(r.out);
     if (v !== null && (best === null || v > best)) {

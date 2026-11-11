@@ -980,7 +980,7 @@ const Alerts = ({ cx, st, stopped, setup, plugAge, unplugAge }) => {
         <Icon n="warn" s={18} />
         <div style={{ minWidth: 0 }}>
           <b>One-time setup needed</b>
-          <span>Open Terminal. Run this command. It asks for your password one time.</span>
+          <span>Open Install ChargeGuard from the disk image again. Or run this command in Terminal. It asks for your password one time.</span>
           <code className="cg-code">{SETUP_CMD}</code>
           <div className="cg-acts">
             <Btn cx={cx} kind="sm" onClick={() => copySetup(cx)}>

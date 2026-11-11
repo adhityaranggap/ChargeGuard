@@ -10,11 +10,28 @@ export interface HelperResult {
   err: string | null;
 }
 
+/** Text for the widget when macOS blocks smc. The installer removes the cause. */
+export const SMC_BLOCKED =
+  "macOS blocked the smc tool. Open Install ChargeGuard again to fix it.";
+
+/**
+ * Returns a plain message for errors that the user can fix, or null.
+ * A quarantined smc is killed by macOS (signal 9, exit 137) and shows "Apple could not verify smc".
+ */
+export function explainHelperError(text: string, code: number | null): string | null {
+  if (code === 137 || /Killed: 9|quarantine|not verify|Operation not permitted/i.test(text)) return SMC_BLOCKED;
+  if (/password is required|not allowed to execute|may not run sudo/i.test(text)) {
+    return "The helper rule is missing. Open Install ChargeGuard again to fix it.";
+  }
+  return null;
+}
+
 function call(cmd: string, arg: string): HelperResult {
   const r = runCmd([SUDO, "-n", HELPER_PATH, cmd, arg], 10000);
   if (r.ok) return { ok: true, err: null };
-  const text = (r.err || r.out || `exit ${r.code}`).trim().split("\n")[0] ?? "failed";
-  return { ok: false, err: `cg-helper ${cmd} ${arg}: ${text}` };
+  const raw = (r.err || r.out || `exit ${r.code}`).trim();
+  const text = raw.split("\n")[0] ?? "failed";
+  return { ok: false, err: explainHelperError(raw, r.code) ?? `cg-helper ${cmd} ${arg}: ${text}` };
 }
 
 export function setLimit(n: number): HelperResult {
