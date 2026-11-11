@@ -1,0 +1,16 @@
+#!/bin/bash
+# ChargeGuard command shim. Find the real folder of this file, then start the CLI with Bun.
+# In the repo, the app is one level up. In ~/.chargeguard/bin, the app is in ../app.
+src="${BASH_SOURCE[0]}"
+while [ -L "$src" ]; do
+  d="$(cd -P "$(dirname "$src")" && pwd)"
+  src="$(readlink "$src")"
+  case "$src" in /*) ;; *) src="$d/$src" ;; esac
+done
+here="$(cd -P "$(dirname "$src")" && pwd)"
+if [ -f "$here/../src/cli.ts" ]; then
+  app="$here/.."
+else
+  app="$here/../app"
+fi
+exec /Users/rangga-sa/.bun/bin/bun "$app/src/cli.ts" "$@"
