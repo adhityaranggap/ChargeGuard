@@ -89,6 +89,11 @@ It is free and open source, so you can read what it does to your Mac.
    The app is not signed with an Apple developer account. That is why macOS asks.
 4. Click **Install**, and type your Mac password.
 
+If a step fails, the installer shows the step, a fix, and a **Show Log** button. The log is `~/.chargeguard/install.log`.
+
+If macOS says "smc Not Opened" or "Apple could not verify smc", click **Done**, and open **Install ChargeGuard** again.
+Version 0.1.1 and later remove the download flag from `smc`, so macOS does not block it. Open the new installer to repair an older install.
+
 The installer copies ChargeGuard to `~/.chargeguard`. It starts two launchd agents: the daemon and the widget.
 You do not need Terminal, Homebrew, or Bun. The disk image includes them.
 

@@ -48,7 +48,18 @@ say "Step 4. Install cg-helper."
 [ -f "$HERE/cg-helper" ] || die "cg-helper not found next to this script."
 install -o root -g wheel -m 755 "$HERE/cg-helper" "$DEST/cg-helper"
 
-say "Step 5. Write the sudoers rule."
+say "Step 5. Remove the quarantine flag, and test smc."
+# Files from a downloaded disk image carry the quarantine flag, and install keeps it.
+# smc is not notarized, so macOS blocks a quarantined smc with "Apple could not verify smc".
+# This step also repairs an older install that has the flag.
+xattr -c "$DEST/smc" "$DEST/cg-helper" 2>/dev/null || true
+if xattr -p com.apple.quarantine "$DEST/smc" >/dev/null 2>&1; then
+  die "macOS keeps the quarantine flag on $DEST/smc. Remove it with: sudo xattr -c $DEST/smc"
+fi
+"$DEST/smc" -k ACLC -r >/dev/null 2>&1 || die "smc does not run. macOS can block it. Open System Settings > Privacy & Security, click Allow Anyway for smc, then install again."
+say "smc runs."
+
+say "Step 6. Write the sudoers rule."
 # The installer app runs this script through an admin dialog, so SUDO_USER is not set.
 # It gives the user name in CG_USER.
 if [ -n "${CG_USER:-}" ] && [ "$CG_USER" != "root" ]; then

@@ -17,6 +17,14 @@ Install:
 4. At home, click the gear on the widget. Click "Use current Wi-Fi" next to Home.
    At the office, do the same next to Office.
 
+If something fails:
+- The installer shows the failed step and a fix. Click "Show Log" to see the full log.
+  The log is in ~/.chargeguard/install.log.
+- "smc Not Opened" or "Apple could not verify smc": click "Done". Open "Install ChargeGuard" again.
+  The new installer removes the download flag from smc, so macOS does not block it.
+- "Install ChargeGuard Not Opened": do Install step 2.
+- If you did not give the password, open "Install ChargeGuard" again.
+
 Use:
 - Click the gear on the widget to open Settings: theme, size, corner, place, charge limit, office hours, and more.
 - The place is found automatically by your Wi-Fi router. You can also choose it by hand in Settings > Places.

@@ -180,7 +180,7 @@ export async function runDaemon(): Promise<void> {
   function applyHardware(d: Decision, nowMs: number): void {
     checkHelper(nowMs);
     if (!helperOk) {
-      setErr("The helper is not installed. Run scripts/install-root.sh.");
+      setErr("The helper is not installed. Open Install ChargeGuard again to fix it.");
       return;
     }
     let err: string | null = null;
