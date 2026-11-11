@@ -11,8 +11,35 @@ It finds the place from your Wi-Fi router. A widget on the desktop shows the bat
 
 > NOTE: ChargeGuard is a beta. It is tested on one MacBook Pro M5 with macOS 27.2.1.
 
+## Why ChargeGuard
+
+A lithium-ion battery wears out faster when it stays at 100% for a long time, and when it is hot.
+A MacBook that is on the charger all day at a desk stays full and warm for hours.
+A limit near 80% makes the battery last more years.
+
+But one fixed limit does not fit a normal day:
+
+- **At home and at the office,** the Mac is on the charger for hours. It needs a limit, for example 80%.
+- **At the end of the office day,** you need a full battery for the trip home and the evening.
+  You must remember to remove the limit before you leave, and to set it again the next day.
+- **At a café, on a trip, or at a client,** you need 100%, because the next charger is far away.
+
+macOS has a native charge limit, but it is one fixed value. It does not know where you are, and it does not change during the day.
+Optimized Battery Charging learns your habits, but you cannot control when it charges to 100%.
+Other charge apps exist, but most are paid, closed source, or do not know about places.
+
+ChargeGuard was built to do this work automatically:
+
+1. It finds the place from your Wi-Fi router. It does not use GPS or Location Services.
+2. It holds the limit at Home and at the Office, and it charges to 100% at other places.
+3. On work days, it charges to 100% before the office day ends. The next day, it goes back to the limit.
+4. It shows what it does on a desktop widget, so you always know why the Mac charges or does not charge.
+
+It is free and open source, so you can read what it does to your Mac.
+
 ## Contents
 
+- [Why ChargeGuard](#why-chargeguard)
 - [Features](#features)
 - [Requirements](#requirements)
 - [Install](#install)
