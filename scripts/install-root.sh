@@ -29,6 +29,8 @@ chown root:wheel "$DEST"
 chmod 755 "$DEST"
 
 say "Step 3. Install the smc binary."
+# The disk image puts smc in runtime/.
+[ -n "${SMC_SRC:-}" ] || [ ! -f "$HERE/../runtime/smc" ] || SMC_SRC="$HERE/../runtime/smc"
 if [ ! -f "$DEST/smc" ]; then
   [ -n "${SMC_SRC:-}" ] || die "smc is missing. Set SMC_SRC to the path of the smc binary."
   [ -f "$SMC_SRC" ] || die "SMC_SRC file not found: $SMC_SRC"
@@ -47,7 +49,11 @@ say "Step 4. Install cg-helper."
 install -o root -g wheel -m 755 "$HERE/cg-helper" "$DEST/cg-helper"
 
 say "Step 5. Write the sudoers rule."
-if [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != "root" ]; then
+# The installer app runs this script through an admin dialog, so SUDO_USER is not set.
+# It gives the user name in CG_USER.
+if [ -n "${CG_USER:-}" ] && [ "$CG_USER" != "root" ]; then
+  U="$CG_USER"
+elif [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != "root" ]; then
   U="$SUDO_USER"
 else
   U="$(stat -f %Su "$HERE/$(basename "$0")")"

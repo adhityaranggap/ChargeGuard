@@ -6,8 +6,8 @@
   <string>com.chargeguard.daemon</string>
   <key>ProgramArguments</key>
   <array>
-    <string>/Users/rangga-sa/.bun/bin/bun</string>
-    <string>/Users/rangga-sa/.chargeguard/app/src/cli.ts</string>
+    <string>__BUN__</string>
+    <string>__HOME__/.chargeguard/app/src/cli.ts</string>
     <string>daemon</string>
   </array>
   <key>RunAtLoad</key>
@@ -19,13 +19,13 @@
   <key>ProcessType</key>
   <string>Standard</string>
   <key>StandardOutPath</key>
-  <string>/Users/rangga-sa/.chargeguard/chargeguard.log</string>
+  <string>__HOME__/.chargeguard/chargeguard.log</string>
   <key>StandardErrorPath</key>
-  <string>/Users/rangga-sa/.chargeguard/chargeguard.log</string>
+  <string>__HOME__/.chargeguard/chargeguard.log</string>
   <key>EnvironmentVariables</key>
   <dict>
     <key>HOME</key>
-    <string>/Users/rangga-sa</string>
+    <string>__HOME__</string>
     <key>PATH</key>
     <string>/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
   </dict>
