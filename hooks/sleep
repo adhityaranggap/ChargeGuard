@@ -1,0 +1,3 @@
+#!/bin/bash
+# sleepwatcher runs this file as ~/.sleep before the Mac sleeps.
+"$HOME/.chargeguard/bin/cg" hook sleep >/dev/null 2>&1 || true

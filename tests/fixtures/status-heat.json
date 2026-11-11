@@ -1,0 +1,142 @@
+{
+  "version": 1,
+  "updatedAt": "2026-11-11T19:00:00+07:00",
+  "snapshot": {
+    "percent": 70,
+    "ac": true,
+    "charging": false,
+    "tempC": 36.4,
+    "clamshell": false,
+    "routerMac": "9c:71:3a:40:db:9f",
+    "gatewayIp": "192.168.100.1",
+    "adapterWatts": 96,
+    "healthPct": 100,
+    "cycleCount": 2,
+    "minutesToEmpty": null,
+    "minutesToFull": null,
+    "batteryWatts": 0.0,
+    "sleeping": false
+  },
+  "decision": {
+    "nativeLimit": 70,
+    "adapter": true,
+    "led": "orange",
+    "lowPower": null,
+    "preventSleep": false,
+    "target": 80,
+    "place": "home",
+    "mode": "heat",
+    "reason": "heat",
+    "summary": "Charging is paused. The battery is hot.",
+    "notify": []
+  },
+  "state": {
+    "override": null,
+    "sailing": false,
+    "heatBlocked": true,
+    "lastAc": true,
+    "lastPlace": "home",
+    "lastPlugAt": "2026-11-11T17:20:00+07:00",
+    "lastUnplugAt": null,
+    "sensorFailures": 0,
+    "firedRules": [],
+    "officeTopupNotified": null
+  },
+  "config": {
+    "version": 1,
+    "limit": 80,
+    "sail": 5,
+    "awayLimit": 100,
+    "places": {
+      "home": {
+        "label": "Home",
+        "routers": [
+          "9c:71:3a:40:db:9f"
+        ],
+        "limit": null
+      },
+      "office": {
+        "label": "Office",
+        "routers": [
+          "3c:84:6a:12:ab:cd"
+        ],
+        "limit": null
+      }
+    },
+    "officeHours": {
+      "enabled": true,
+      "days": [
+        1,
+        2,
+        3,
+        4,
+        5
+      ],
+      "start": "08:00",
+      "end": "17:00",
+      "leadMin": 90,
+      "graceMin": 120
+    },
+    "heat": {
+      "enabled": true,
+      "maxC": 35,
+      "resumeC": 32
+    },
+    "autoDischarge": false,
+    "dischargeInClamshell": false,
+    "stopChargingWhenSleeping": true,
+    "sleepControl": true,
+    "lowPower": {
+      "enabled": false,
+      "belowPct": 20
+    },
+    "magsafeLed": true,
+    "schedule": [
+      {
+        "id": "r1",
+        "enabled": true,
+        "days": [
+          1,
+          2
+        ],
+        "time": "06:30",
+        "action": {
+          "kind": "topup"
+        }
+      }
+    ],
+    "notifications": {},
+    "menubar": {
+      "icon": "battery",
+      "showPercent": true,
+      "sections": [
+        "status",
+        "place",
+        "limit",
+        "actions",
+        "officeHours",
+        "schedule",
+        "settings"
+      ]
+    },
+    "lastCalibration": "2026-11-02"
+  },
+  "placeLabel": "Home",
+  "office": {
+    "topupStart": null,
+    "end": null,
+    "graceEnd": null,
+    "etaMin": null,
+    "tooSlow": false
+  },
+  "next": "Charging starts again at 32 °C.",
+  "health": {
+    "daemon": true,
+    "smc": true,
+    "backend": "native",
+    "appliedLimit": 70,
+    "helper": true,
+    "tempKey": "TB0T",
+    "lastError": null
+  }
+}

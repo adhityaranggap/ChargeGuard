@@ -1,0 +1,56 @@
+#!/bin/bash
+# ChargeGuard root helper. Installed root:wheel 0755 at /usr/local/libexec/chargeguard/cg-helper.
+# Called only through: sudo -n /usr/local/libexec/chargeguard/cg-helper <command> <arg>
+# It accepts a fixed set of commands. Every argument is validated. Nothing else runs as root.
+set -euo pipefail
+export PATH=/usr/bin:/bin:/usr/sbin:/sbin
+
+SMC=/usr/local/libexec/chargeguard/smc
+DOM=com.apple.smartcharging.topoffprotection
+NOTE=com.apple.smartcharging.defaultschanged
+
+die() { echo "cg-helper: $*" >&2; exit 2; }
+
+[ "$(id -u)" = "0" ] || die "must run as root"
+[ $# -eq 2 ] || die "usage: cg-helper limit <10..100> | adapter on|off | led system|off|green|orange | lowpower 0|1"
+
+cmd=$1
+arg=$2
+
+case "$cmd" in
+  limit)
+    [[ "$arg" =~ ^[0-9]{2,3}$ ]] || die "limit must be an integer"
+    n=$((10#$arg))
+    { [ "$n" -ge 10 ] && [ "$n" -le 100 ]; } || die "limit must be 10..100"
+    if [ "$n" -eq 100 ]; then
+      defaults write "$DOM" MCLFeatureState -int 0
+    else
+      defaults write "$DOM" MCLFeatureState -int 1
+      defaults write "$DOM" mclLimitValue -int "$n"
+    fi
+    notifyutil -p "$NOTE"
+    ;;
+  adapter)
+    case "$arg" in
+      on)  "$SMC" -k CHIE -w 00 ;;
+      off) "$SMC" -k CHIE -w 08 ;;
+      *) die "adapter must be on|off" ;;
+    esac
+    ;;
+  led)
+    case "$arg" in
+      system) v=00 ;; off) v=01 ;; green) v=03 ;; orange) v=04 ;;
+      *) die "led must be system|off|green|orange" ;;
+    esac
+    "$SMC" -k ACLC -w "$v"
+    ;;
+  lowpower)
+    case "$arg" in
+      0|1) pmset -a lowpowermode "$arg" ;;
+      *) die "lowpower must be 0|1" ;;
+    esac
+    ;;
+  *)
+    die "unknown command"
+    ;;
+esac
