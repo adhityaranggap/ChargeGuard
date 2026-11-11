@@ -13,4 +13,9 @@ if [ -f "$here/../src/cli.ts" ]; then
 else
   app="$here/../app"
 fi
-exec /Users/rangga-sa/.bun/bin/bun "$app/src/cli.ts" "$@"
+# Use the Bun from the installer first. Then the user's own Bun.
+for bun in "$app/runtime/bun" "$HOME/.bun/bin/bun" "$(command -v bun 2>/dev/null)"; do
+  [ -n "$bun" ] && [ -x "$bun" ] && exec "$bun" "$app/src/cli.ts" "$@"
+done
+echo "cg: Bun was not found. Install ChargeGuard again." >&2
+exit 127

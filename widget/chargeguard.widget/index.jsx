@@ -8,7 +8,7 @@ import { run, css, React } from "uebersicht";
 // ---------------------------------------------------------------------------
 
 const CG = '"$HOME/.chargeguard/bin/cg"';
-const SETUP_CMD = "sudo bash ~/NE/chargeguard/scripts/install-root.sh";
+const SETUP_CMD = "sudo bash ~/.chargeguard/app/scripts/install-root.sh";
 const KICK_CMD = "launchctl kickstart -k gui/$(id -u)/com.chargeguard.daemon";
 
 const STALE_MS = 90000; // status file older than this = daemon stopped

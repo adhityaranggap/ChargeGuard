@@ -9,8 +9,8 @@
     <string>/usr/bin/osascript</string>
     <string>-l</string>
     <string>JavaScript</string>
-    <string>/Users/rangga-sa/.chargeguard/app/widget/standalone/host.js</string>
-    <string>/Users/rangga-sa/.chargeguard/app/widget</string>
+    <string>__HOME__/.chargeguard/app/widget/standalone/host.js</string>
+    <string>__HOME__/.chargeguard/app/widget</string>
   </array>
   <key>RunAtLoad</key>
   <true/>
@@ -23,13 +23,13 @@
   <key>LimitLoadToSessionType</key>
   <string>Aqua</string>
   <key>StandardOutPath</key>
-  <string>/Users/rangga-sa/.chargeguard/widget.log</string>
+  <string>__HOME__/.chargeguard/widget.log</string>
   <key>StandardErrorPath</key>
-  <string>/Users/rangga-sa/.chargeguard/widget.log</string>
+  <string>__HOME__/.chargeguard/widget.log</string>
   <key>EnvironmentVariables</key>
   <dict>
     <key>HOME</key>
-    <string>/Users/rangga-sa</string>
+    <string>__HOME__</string>
     <key>PATH</key>
     <string>/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
   </dict>

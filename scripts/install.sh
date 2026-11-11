@@ -9,9 +9,25 @@ LA="$HOME/Library/LaunchAgents"
 
 say() { echo "install: $*"; }
 
+die() { echo "install: ERROR: $*" >&2; exit 1; }
+
+say "Check the Mac."
+[ "$(uname -m)" = "arm64" ] || die "ChargeGuard needs a Mac with Apple silicon."
+pmset -g battlimit >/dev/null 2>&1 || die "This macOS version has no native charge limit. Update macOS."
+
 say "Copy the app to $APP."
 mkdir -p "$APP" "$DATA/bin"
-rsync -a --delete --exclude .git --exclude docs --exclude tests --exclude node_modules "$REPO/" "$APP/"
+rsync -a --delete --exclude .git --exclude docs --exclude tests --exclude node_modules --exclude dist "$REPO/" "$APP/"
+# Files from a downloaded disk image carry the quarantine flag. Remove it from the copy.
+xattr -dr com.apple.quarantine "$APP" 2>/dev/null || true
+
+# Find Bun. The disk image puts it in runtime/. A developer can use their own Bun.
+BUN=""
+for b in "$APP/runtime/bun" "$HOME/.bun/bin/bun" "$(command -v bun 2>/dev/null || true)"; do
+  if [ -n "$b" ] && [ -x "$b" ]; then BUN="$b"; break; fi
+done
+[ -n "$BUN" ] || die "Bun was not found. Use the ChargeGuard disk image, or install Bun."
+say "Use Bun at $BUN."
 
 say "Install the command $DATA/bin/cg."
 install -m 755 "$REPO/bin/cg" "$DATA/bin/cg"
@@ -30,10 +46,11 @@ stop_agent() {
   done
 }
 
-# Copy the plist for label $1, stop the old agent, then start the new one.
+# Write the plist for label $1 from its template, stop the old agent, then start the new one.
 start_agent() {
   local label="$1"
-  cp "$REPO/launchd/$label.plist" "$LA/$label.plist"
+  sed -e "s#__BUN__#$BUN#g" -e "s#__HOME__#$HOME#g" "$REPO/launchd/$label.plist" > "$LA/$label.plist"
+  plutil -lint "$LA/$label.plist" >/dev/null || die "The plist for $label is not valid."
   stop_agent "$label"
   launchctl bootstrap "gui/$(id -u)" "$LA/$label.plist"
 }

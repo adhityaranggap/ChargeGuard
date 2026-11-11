@@ -12,7 +12,8 @@ import { SMC_PATH, runCmd } from "./smc";
 import { PATHS } from "./types";
 import type { Config, NotifyEvent, PlaceId, PlaceMode, ScheduleAction, ScheduleRule, Status, Weekday } from "./types";
 
-const BUN_PATH = "/Users/rangga-sa/.bun/bin/bun";
+// The Bun binary that runs this CLI. The installer can bundle Bun, so the path is not fixed.
+const BUN_PATH = process.execPath;
 const STALE_SEC = 90;
 const NOTIFY_EVENTS: NotifyEvent[] = [
   "plug", "unplug", "officeTopupStart", "officeTopupDone", "heatPause", "calibrationStep", "dischargeDone",
@@ -221,7 +222,7 @@ function cmdDoctor(json: boolean): number {
   add("smc", existsSync(SMC_PATH), SMC_PATH);
   add("helper", existsSync(HELPER_PATH), HELPER_PATH);
   const sudoOk = helperAvailable();
-  add("sudo rule", sudoOk, sudoOk ? "sudo -n works for cg-helper" : "Run: sudo bash scripts/install-root.sh");
+  add("sudo rule", sudoOk, sudoOk ? "sudo -n works for cg-helper" : 'Open "Install ChargeGuard" again, or run: sudo bash ~/.chargeguard/app/scripts/install-root.sh');
   const uid = typeof process.getuid === "function" ? process.getuid() : 501;
   const lc = runCmd(["/bin/launchctl", "print", `gui/${uid}/com.chargeguard.daemon`], 5000);
   const running = lc.ok && /state = running/.test(lc.out);

@@ -31,7 +31,7 @@ export const DEFAULT_CONFIG: Config = {
   sail: 5,
   awayLimit: 100,
   places: {
-    home: { label: "Home", routers: ["9c:71:3a:40:db:9f"], limit: null },
+    home: { label: "Home", routers: [], limit: null },
     office: { label: "Office", routers: [], limit: null },
   },
   placeMode: "auto",

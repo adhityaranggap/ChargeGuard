@@ -9,6 +9,7 @@ const ELSEWHERE = "11:22:33:44:55:66";
 
 function cfg(over: (c: Config) => void = () => {}): Config {
   const c: Config = structuredClone(DEFAULT_CONFIG);
+  c.places.home.routers = [HOME];
   c.places.office.routers = [OFFICE];
   over(c);
   return c;

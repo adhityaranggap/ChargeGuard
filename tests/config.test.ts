@@ -61,7 +61,7 @@ describe("validateConfig", () => {
     const c = validateConfig(undefined);
     expect(c).toEqual(DEFAULT_CONFIG);
     c.places.home.routers.push("x");
-    expect(DEFAULT_CONFIG.places.home.routers).toHaveLength(1);
+    expect(DEFAULT_CONFIG.places.home.routers).toHaveLength(0);
   });
 
   test("an empty object gives the defaults", () => {
