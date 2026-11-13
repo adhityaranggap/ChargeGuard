@@ -68,8 +68,24 @@ Priority: P0 = must have in v1, P1 = v1 if time, P2 = later.
 | R20 | Menu bar | SwiftBar plugin. Icon style (`battery`, `percent`, `bolt`, `leaf`) and dropdown sections are set in config. | P1 |
 | R21 | Wallpaper widget | Übersicht widget. Status, controls, and settings. See section 3. | P0 |
 | R22 | Battery history | Sparkline of the last 24 h. | P2 |
+| R23 | Calendar trips | Read timed calendar events with a physical place for the next 24 h. Charge to 100% before the user leaves. Default off. See the criteria below. | P1 |
 
 Non-goals for v1: Intel Macs, a native Swift app, App Store release, license or paid tiers, any copy of another app's name, icons, or look.
+
+### R23 Calendar trips: acceptance criteria
+
+- C1: The widget host runs `scripts/cg-calendar.js` every 10 min when `calendar.enabled` is true. It writes `~/.chargeguard/trips.json` as `[{id, title, start, location, travelMin, from, computedAt}]`.
+- C2: The script skips all-day events, events without a place, online meetings, and places that Apple Maps cannot find.
+- C3: Apple Maps gives the drive time from the saved Home or Office address. The script uses the current place from `status.json`.
+- C4: Leave time = start − drive time − `arriveBufferMin` (default 10).
+- C5: Top-up start = leave time − time to full × 1.2. The target is 100% from the top-up start until leave time + `graceMin` (default 30).
+- C6: If the drive time is less than `minTravelMin` (default 10), the trip makes no top-up.
+- C7: If the drive time is unknown (Away place or no address), the daemon uses `fallbackTravelMin` (default 45).
+- C8: A trip top-up stays on after it starts, also when the Mac charges and the estimate goes down. It stops when the event ends or leaves `trips.json`.
+- C9: A user override (pause, discharge) wins over a trip top-up. The daemon ignores `trips.json` if it is older than 30 min.
+- C10: `cg trips [--json]` shows the next trips and times. `cg calendar on|off|refresh`, `cg set places.<home|office>.address "..."`, and `cg set calendar.<key> N` work. The widget has Settings > Calendar with **Grant calendar access**.
+- C11: Privacy. The feature uses no GPS and no Location Services. Only Apple Maps gets addresses and event places. Nothing else leaves the Mac.
+- C12: If Calendar access is denied, the feature does nothing and the widget shows how to allow access. The default charge rules stay in force.
 
 ### Acceptance checks (P0)
 
@@ -107,6 +123,7 @@ Source: `~/NE/chargeguard/`. Install target: `~/.chargeguard/` (config, state, s
   scripts/install.sh                    user part: copy, launchd, widget, SwiftBar plugin
   scripts/install-root.sh               sudo part: /etc/sudoers.d/chargeguard allowlist
   scripts/uninstall.sh                  fail-safe restore, then remove
+  scripts/cg-calendar.js                JXA probe: calendar events + Apple Maps drive time -> ~/.chargeguard/trips.json
   tests/policy.test.ts, tests/config.test.ts, tests/menubar.test.ts, tests/fixtures/*
   docs/PRD.md, docs/DESIGN.md, docs/VERIFICATION.md, README.md
 ```
@@ -120,9 +137,9 @@ Source: `~/NE/chargeguard/`. Install target: `~/.chargeguard/` (config, state, s
 
 ### Contracts (summary; full types in `src/types.ts`)
 
-- `Config`: `limit`, `sail`, `awayLimit`, `places.home|office {label, routers[], limit?}`, `officeHours {enabled, days[], start, end, leadMin, graceMin}`, `heat {enabled, maxC, resumeC}`, `autoDischarge`, `dischargeInClamshell`, `stopChargingWhenSleeping`, `sleepControl`, `lowPower {enabled, belowPct}`, `magsafeLed`, `schedule[]`, `notifications`, `menubar {icon, sections[]}`.
-- `RuntimeState`: `override {kind: topup|discharge|calibrate|pause, target, step, startedAt}`, `sailing`, `heatBlocked`, `lastAc`, `lastPlace`, `lastPlugAt`, `sensorFailures`.
-- `Status` (for UI): snapshot + decision + `next` (for example "Top-up starts 15:30, full by about 17:00") + `health {daemon, smc, sudo}` + `updatedAt`.
+- `Config`: `limit`, `sail`, `awayLimit`, `places.home|office {label, routers[], limit?}`, `officeHours {enabled, days[], start, end, leadMin, graceMin}`, `heat {enabled, maxC, resumeC}`, `autoDischarge`, `dischargeInClamshell`, `stopChargingWhenSleeping`, `sleepControl`, `lowPower {enabled, belowPct}`, `magsafeLed`, `schedule[]`, `notifications`, `menubar {icon, sections[]}`, `calendar {enabled, arriveBufferMin, fallbackTravelMin, minTravelMin, graceMin, lookaheadH}`. A place also has `address`.
+- `RuntimeState`: `override {kind: topup|discharge|calibrate|pause, target, step, startedAt}`, `sailing`, `heatBlocked`, `lastAc`, `lastPlace`, `lastPlugAt`, `sensorFailures`, `tripTopup {id, until}`.
+- `Status` (for UI): snapshot + decision + `next` (for example "Top-up starts 15:30, full by about 17:00") + `trip` (next calendar trip with `leaveAt`, `topupStart`, `travelMin`, `chargeMin`, or null) + `health {daemon, smc, sudo}` + `updatedAt`.
 - Modes: `holding`, `charging`, `sailing`, `topup`, `discharging`, `calibrating`, `heat`, `paused`, `unplugged`, `error`.
 
 ### Charge control backend (M0 probe result, 2026-11-11)
@@ -132,7 +149,7 @@ On this M5 with macOS 27, Apple gates the SMC charge keys `CHTE`, `CH0B`, `CH0C`
 | Purpose | Mechanism | Probe result |
 |---|---|---|
 | Charge limit 10..99 | As root: `defaults write com.apple.smartcharging.topoffprotection MCLFeatureState -int 1`, `defaults write ... mclLimitValue -int N`, then `notifyutil -p com.apple.smartcharging.defaultschanged`. `PowerUIAgent` (root, pid 464) applies it. | Works. `pmset -g battlimit` shows `chargeSocLimitSoc = 80`, `chargeSocLimitDrain = 1`. |
-| No limit (100) | As root: `MCLFeatureState -int 0` + notify. Verify with `pmset -g battlimit` = "No battery level limits set". | Not tested yet. Test in M5. |
+| No limit (100) | As root: `MCLFeatureState -int 1` + `mclLimitValue -int 100` + notify. Verify with `pmset -g battlimit`. | `MCLFeatureState 0` did not lift the limit in the live test on 2026-11-13. The new method needs a live test. |
 | Read current limit | `pmset -g battlimit` (no root). Parse `chargeSocLimitSoc`. | Works. |
 | Adapter off / on (discharge) | `smc -k CHIE -w 08` / `-w 00` | Works. The Mac runs on battery while plugged. |
 | MagSafe LED | `smc -k ACLC -w 00/01/03/04` (system/off/green/orange) | Works. |
@@ -150,7 +167,7 @@ Effects on requirements:
 Privileged work runs only through one root-owned helper: `/usr/local/libexec/chargeguard/cg-helper` (bash, root:wheel, 755). It accepts only these commands, with strict validation:
 
 ```
-cg-helper limit <10..100>      # 100 = MCLFeatureState 0
+cg-helper limit <10..100>      # 100 = MCLFeatureState 1 + mclLimitValue 100
 cg-helper adapter on|off
 cg-helper led system|off|green|orange
 cg-helper lowpower 0|1

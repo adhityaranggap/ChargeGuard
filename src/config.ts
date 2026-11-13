@@ -19,6 +19,7 @@ import type {
   RuntimeState,
   ScheduleAction,
   ScheduleRule,
+  Trip,
   Weekday,
   WidgetCorner,
   WidgetTheme,
@@ -31,8 +32,8 @@ export const DEFAULT_CONFIG: Config = {
   sail: 5,
   awayLimit: 100,
   places: {
-    home: { label: "Home", routers: [], limit: null },
-    office: { label: "Office", routers: [], limit: null },
+    home: { label: "Home", routers: [], limit: null, address: null },
+    office: { label: "Office", routers: [], limit: null, address: null },
   },
   placeMode: "auto",
   officeHours: {
@@ -43,6 +44,7 @@ export const DEFAULT_CONFIG: Config = {
     leadMin: 90,
     graceMin: 120,
   },
+  calendar: { enabled: false, arriveBufferMin: 10, fallbackTravelMin: 45, graceMin: 30, lookaheadH: 24, minTravelMin: 10 },
   heat: { enabled: true, maxC: 35, resumeC: 32 },
   autoDischarge: false,
   dischargeInClamshell: false,
@@ -72,6 +74,9 @@ export const DEFAULT_STATE: RuntimeState = {
   sensorFailures: 0,
   firedRules: [],
   officeTopupNotified: null,
+  tripTopup: null,
+  tripTopupNotified: null,
+  lastChargeWatts: null,
 };
 
 function clone<T>(v: T): T {
@@ -170,11 +175,18 @@ function asRouters(v: unknown, def: string[]): string[] {
   return out;
 }
 
+/** A trimmed string of 1..200 characters, or null. */
+function asAddress(v: unknown): string | null {
+  if (typeof v !== "string") return null;
+  const t = v.trim();
+  return t !== "" && t.length <= 200 ? t : null;
+}
+
 function asPlace(raw: unknown, def: Config["places"][PlaceId]): Config["places"][PlaceId] {
   const r = isObj(raw) ? raw : {};
   const label = typeof r.label === "string" && r.label.trim() !== "" ? r.label.trim() : def.label;
   const limit = typeof r.limit === "number" && Number.isFinite(r.limit) ? clampNum(r.limit, 80, 10, 100) : null;
-  return { label, routers: asRouters(r.routers, def.routers), limit };
+  return { label, routers: asRouters(r.routers, def.routers), limit, address: asAddress(r.address) };
 }
 
 function asScheduleRule(raw: unknown): ScheduleRule | null {
@@ -210,6 +222,7 @@ const NOTIFY_EVENTS: NotifyEvent[] = [
   "heatPause",
   "calibrationStep",
   "dischargeDone",
+  "tripTopupStart",
 ];
 const MENUBAR_ICONS: MenubarIcon[] = ["battery", "percent", "bolt", "leaf"];
 const MENUBAR_SECTIONS: MenubarSection[] = [
@@ -247,6 +260,7 @@ export function validateConfig(raw: unknown): Config {
 
   const places = isObj(raw.places) ? raw.places : {};
   const oh = isObj(raw.officeHours) ? raw.officeHours : {};
+  const cal = isObj(raw.calendar) ? raw.calendar : {};
   const heat = isObj(raw.heat) ? raw.heat : {};
   const lp = isObj(raw.lowPower) ? raw.lowPower : {};
   const mb = isObj(raw.menubar) ? raw.menubar : {};
@@ -304,6 +318,14 @@ export function validateConfig(raw: unknown): Config {
       leadMin: clampNum(oh.leadMin, d.officeHours.leadMin, 0, 240),
       graceMin: clampNum(oh.graceMin, d.officeHours.graceMin, 0, 480),
     },
+    calendar: {
+      enabled: asBool(cal.enabled, d.calendar.enabled),
+      arriveBufferMin: clampNum(cal.arriveBufferMin, d.calendar.arriveBufferMin, 0, 120),
+      fallbackTravelMin: clampNum(cal.fallbackTravelMin, d.calendar.fallbackTravelMin, 0, 300),
+      graceMin: clampNum(cal.graceMin, d.calendar.graceMin, 0, 240),
+      lookaheadH: clampNum(cal.lookaheadH, d.calendar.lookaheadH, 1, 72),
+      minTravelMin: clampNum(cal.minTravelMin, d.calendar.minTravelMin, 0, 120),
+    },
     heat: { enabled: asBool(heat.enabled, d.heat.enabled), maxC, resumeC },
     autoDischarge: asBool(raw.autoDischarge, d.autoDischarge),
     dischargeInClamshell: asBool(raw.dischargeInClamshell, d.dischargeInClamshell),
@@ -351,6 +373,13 @@ function asOverride(raw: unknown): Override | null {
   };
 }
 
+function asTripTopup(raw: unknown): RuntimeState["tripTopup"] {
+  if (!isObj(raw)) return null;
+  if (typeof raw.id !== "string" || raw.id === "") return null;
+  if (typeof raw.until !== "string" || Number.isNaN(Date.parse(raw.until))) return null;
+  return { id: raw.id, until: raw.until };
+}
+
 /** Merge raw over DEFAULT_STATE. Throws only if raw is not an object and not undefined. */
 export function validateState(raw: unknown): RuntimeState {
   if (raw === undefined) return clone(DEFAULT_STATE);
@@ -368,7 +397,66 @@ export function validateState(raw: unknown): RuntimeState {
     sensorFailures: Math.max(0, Math.floor(fails)),
     firedRules: Array.isArray(raw.firedRules) ? raw.firedRules.filter((x): x is string => typeof x === "string") : [],
     officeTopupNotified: typeof raw.officeTopupNotified === "string" ? raw.officeTopupNotified : null,
+    tripTopup: asTripTopup(raw.tripTopup),
+    tripTopupNotified: typeof raw.tripTopupNotified === "string" ? raw.tripTopupNotified : null,
+    lastChargeWatts:
+      typeof raw.lastChargeWatts === "number" && Number.isFinite(raw.lastChargeWatts) &&
+      raw.lastChargeWatts >= 1 && raw.lastChargeWatts <= 200
+        ? raw.lastChargeWatts
+        : null,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Calendar trips
+// ---------------------------------------------------------------------------
+
+/** The probe file is stale after this many minutes. */
+export const TRIPS_MAX_AGE_MIN = 30;
+
+export interface ParsedTrips {
+  access: "granted" | "denied" | "error" | null;
+  trips: Trip[];
+}
+
+const TRIP_FROM: readonly string[] = ["home", "office", "away", "offline"];
+
+function parseTrip(raw: unknown): Trip | null {
+  if (!isObj(raw)) return null;
+  const { id, title, location, start, travelMin, from } = raw;
+  if (typeof id !== "string" || typeof title !== "string" || typeof location !== "string") return null;
+  if (typeof start !== "string" || Number.isNaN(Date.parse(start))) return null;
+  if (travelMin !== null && (typeof travelMin !== "number" || !Number.isFinite(travelMin) || travelMin < 0)) return null;
+  if (typeof from !== "string" || !TRIP_FROM.includes(from)) return null;
+  return { id, title, start, location, travelMin: travelMin as number | null, from: from as PlaceKind };
+}
+
+/**
+ * Read the parsed content of trips.json. Return no trips if the file is stale, the access is not
+ * granted, or the shape is wrong. Drop each bad trip. Never throw.
+ */
+export function parseTrips(raw: unknown, now: Date): ParsedTrips {
+  if (!isObj(raw)) return { access: null, trips: [] };
+  const access = raw.access === "granted" || raw.access === "denied" || raw.access === "error" ? raw.access : null;
+  if (access !== "granted") return { access, trips: [] };
+  const at = typeof raw.computedAt === "string" ? Date.parse(raw.computedAt) : Number.NaN;
+  if (Number.isNaN(at) || now.getTime() - at > TRIPS_MAX_AGE_MIN * 60000) return { access, trips: [] };
+  if (!Array.isArray(raw.trips)) return { access, trips: [] };
+  const trips: Trip[] = [];
+  for (const t of raw.trips) {
+    const ok = parseTrip(t);
+    if (ok) trips.push(ok);
+  }
+  return { access, trips };
+}
+
+/** Load trips.json from the config directory. A missing or broken file gives no trips. */
+export function loadTrips(dir: string, now: Date): ParsedTrips {
+  try {
+    return parseTrips(JSON.parse(fs.readFileSync(path.join(dir, PATHS.trips), "utf8")), now);
+  } catch {
+    return { access: null, trips: [] };
+  }
 }
 
 // ---------------------------------------------------------------------------

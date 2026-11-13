@@ -1,7 +1,8 @@
 // ChargeGuard desktop widget for Übersicht 1.6.
 // Reads ~/.chargeguard/status.json (type Status in src/types.ts).
-// Sends every change through the `cg` CLI. The widget has no text inputs.
-import { run, css, React } from "uebersicht";
+// Sends every change through the `cg` CLI. Only the Calendar address fields are text inputs.
+// probe() exists only in the standalone host. Übersicht has no probe(), so the widget uses run().
+import { run, css, React, probe } from "uebersicht";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -267,6 +268,38 @@ function cfgSet(cx, path, val, delay) {
   );
 }
 
+// Single-quote a text value for /bin/sh.
+const shq = (v) => "'" + String(v).replace(/'/g, "'\\''") + "'";
+
+// Place address through `cg set`. Empty text clears the address.
+function addressSet(cx, id, text) {
+  const val = text.trim() === "" ? null : text.trim();
+  cx.act(
+    "addr:" + id,
+    `${CG} set places.${id}.address ${val === null ? "null" : shq(val)}`,
+    { path: `config.places.${id}.address`, op: "eq", val },
+    val === null ? "" : val,
+    300
+  );
+}
+
+// Grant calendar access. The probe runs one time now, so macOS shows the permission prompt.
+const PROBE_FALLBACK = '/usr/bin/osascript -l JavaScript "$HOME/.chargeguard/app/scripts/cg-calendar.js" >/dev/null 2>&1 &';
+function grantCalendar(cx) {
+  const p = typeof probe === "function" ? probe() : run(PROBE_FALLBACK).then(() => "started");
+  p.then(
+    (r) =>
+      cx.toast(
+        r === "running"
+          ? "The calendar check is already running."
+          : r === "missing"
+          ? "The calendar script is missing. Run the install again."
+          : "Calendar check started. Allow access in the macOS prompt."
+      ),
+    () => cx.toast("The calendar check did not start. Try again.")
+  );
+}
+
 function limitSet(cx, n) {
   cx.act("limit", `${CG} limit ${n}`, { path: "config.limit", op: "eq", val: n }, n, 450);
 }
@@ -367,6 +400,12 @@ const ICONS = {
     <g>
       <circle cx="12" cy="12" r="9" />
       <path d="M12 7v5l3 2" />
+    </g>
+  ),
+  calendar: (
+    <g>
+      <rect x="3.5" y="5" width="17" height="15" rx="2" />
+      <path d="M3.5 10h17M8 3v4M16 3v4" />
     </g>
   ),
 };
@@ -525,6 +564,7 @@ ${THEMES.filter((t) => t.vars).map((t) => `.cg-wrap[data-theme=${t.v}]{ ${t.vars
 .cg-sum{ margin-top:8px; font-size:13px; }
 .cg-next{ margin-top:4px; font-size:12px; color:var(--fg2); display:flex; gap:6px; align-items:flex-start; }
 .cg-next svg{ flex:none; margin-top:1px; }
+.cg-late{ color:var(--redt); font-weight:600; }
 .cg-warn{ display:flex; gap:8px; margin-top:8px; padding:8px 12px; border-radius:12px; background:rgba(255,69,58,0.16); font-size:12px; }
 .cg-warn svg{ flex:none; color:var(--redt); margin-top:1px; }
 .cg-wrap{ --redt:#FF6961; }
@@ -593,6 +633,9 @@ ${THEMES.filter((t) => t.vars).map((t) => `.cg-wrap[data-theme=${t.v}]{ ${t.vars
 .cg-plrow .t{ flex:1; min-width:0; font-size:13px; }
 .cg-plrow .t small{ display:block; font-size:11px; color:var(--fg3); }
 .cg-plrow + .cg-plrow{ margin-top:4px; }
+.cg-txt{ flex:none; width:190px; height:28px; padding:0 10px; border-radius:10px; border:1px solid var(--line); background:var(--btn); color:var(--fg); font:inherit; font-size:12px; outline:none; }
+.cg-txt:focus{ border-color:var(--c); }
+.cg-txt.cg-pend{ opacity:.6; }
 .cg-note{ padding:8px 12px; margin-bottom:8px; border-radius:10px; background:var(--btn); font-size:12px; color:var(--fg2); }
 .cg-sched{ display:flex; align-items:center; gap:8px; min-height:32px; font-size:12px; }
 .cg-sched .t{ flex:1; min-width:0; }
@@ -1220,7 +1263,16 @@ const Card = ({ cx }) => {
         ) : (
           <p className="cg-sum">{d.summary}</p>
         )}
-        {st.next ? (
+        {st.trip ? (
+          <p className="cg-next">
+            <Icon n="calendar" s={14} />
+            <span>
+              {`Meeting ${st.trip.title} ${hhmm(st.trip.start)} · leave ${hhmm(st.trip.leaveAt)}`}
+              {st.trip.tooLate ? <b className="cg-late">{" · Can miss 100%"}</b> : null}
+            </span>
+          </p>
+        ) : null}
+        {st.next && !(st.trip && /^Meeting /.test(st.next)) ? (
           <p className="cg-next">
             <Icon n="clock" s={14} />
             <span>{st.next}</span>
@@ -1415,6 +1467,118 @@ const OfficeSection = ({ cx, st }) => {
             onChange={(n) => set({ leadMin: n })}
           />
         </Row>
+      </div>
+    </Section>
+  );
+};
+
+// Text field. It keeps the typed text in local state and sends it on Enter or on blur.
+const AddressField = ({ cx, id, label, actual }) => {
+  const [text, setText] = React.useState(null);
+  const shown = text !== null ? text : cx.val("addr:" + id, actual || "");
+  const commit = () => {
+    if (text === null) return;
+    if (text.trim() !== (actual || "")) addressSet(cx, id, text);
+    setText(null);
+  };
+  return (
+    <input
+      type="text"
+      className={"cg-txt" + (cx.pend("addr:" + id) ? " cg-pend" : "")}
+      aria-label={label}
+      placeholder="Street, city"
+      maxLength={200}
+      value={shown}
+      onChange={(e) => setText(e.target.value)}
+      onBlur={commit}
+      onKeyDown={(e) => {
+        if (e.key === "Enter") e.target.blur();
+      }}
+    />
+  );
+};
+
+const TRIPS_CMD = "cat \"$HOME/.chargeguard/trips.json\" 2>/dev/null || echo '{}'";
+const ACCESS_TEXT = {
+  granted: "Access granted.",
+  denied: "Access denied. Open System Settings, Privacy and Security, Calendars.",
+  error: "The access request failed. Tap Grant calendar access.",
+};
+
+// Reads trips.json one time when the section opens, and again after the Grant button.
+const CalendarAccess = ({ reload }) => {
+  const [access, setAccess] = React.useState(undefined);
+  React.useEffect(() => {
+    let live = true;
+    run(TRIPS_CMD).then(
+      (out) => {
+        let a = null;
+        try {
+          a = JSON.parse(String(out || "{}")).access || null;
+        } catch (e) {
+          a = null;
+        }
+        if (live) setAccess(a);
+      },
+      () => {}
+    );
+    return () => {
+      live = false;
+    };
+  }, [reload]);
+  if (access === undefined) return null;
+  return <div className="cg-note">{ACCESS_TEXT[access] || "No calendar check yet. Tap Grant calendar access."}</div>;
+};
+
+const CAL_DEFAULT = { enabled: false, arriveBufferMin: 10, fallbackTravelMin: 45, minTravelMin: 10 };
+
+const CalendarSection = ({ cx, st }) => {
+  const c = { ...CAL_DEFAULT, ...(st.config.calendar || {}) };
+  const on = cx.val("set:calendar.enabled", c.enabled);
+  const [reload, setReload] = React.useState(0);
+  const num = (key, label, help, min, max) => (
+    <Row label={label} help={help}>
+      <Stepper
+        cx={cx}
+        pk={"set:calendar." + key}
+        label={label}
+        value={cx.val("set:calendar." + key, c[key])}
+        min={min}
+        max={max}
+        step={5}
+        fmt={(n) => n + " min"}
+        onSet={(n) => cfgSet(cx, "calendar." + key, n, 450)}
+      />
+    </Row>
+  );
+  return (
+    <Section title="Calendar" help="The Mac charges to 100% before you leave for a meeting at another place. Addresses stay on this Mac. Only Apple Maps gets them.">
+      <Row label="Calendar trips">
+        <Toggle cx={cx} pk="set:calendar.enabled" label="Calendar trips" on={on} onChange={(v) => cfgSet(cx, "calendar.enabled", v)} />
+      </Row>
+      <div className={on ? "" : "cg-off"}>
+        <Row label="Home address">
+          <AddressField cx={cx} id="home" label="Home address" actual={st.config.places.home.address} />
+        </Row>
+        <Row label="Office address">
+          <AddressField cx={cx} id="office" label="Office address" actual={st.config.places.office.address} />
+        </Row>
+        {num("arriveBufferMin", "Arrive buffer", "Arrive this long before the meeting.", 0, 120)}
+        {num("fallbackTravelMin", "Fallback travel time", "Used when Apple Maps gives no time.", 0, 300)}
+        {num("minTravelMin", "Minimum drive", "A shorter drive starts no top-up.", 0, 120)}
+      </div>
+      <CalendarAccess reload={reload} />
+      <div className="cg-acts">
+        <Btn
+          cx={cx}
+          kind="sm"
+          onClick={() => {
+            grantCalendar(cx);
+            setTimeout(() => setReload((n) => n + 1), 6000);
+          }}
+        >
+          Grant calendar access
+        </Btn>
       </div>
     </Section>
   );
@@ -1624,6 +1788,7 @@ const Drawer = ({ cx }) => {
       <PlacesSection cx={cx} st={st} />
       <LimitSection cx={cx} st={st} />
       <OfficeSection cx={cx} st={st} />
+      <CalendarSection cx={cx} st={st} />
       <ProtectionSection cx={cx} st={st} />
       <Section title="MagSafe LED">
         <Row label="Use the LED" help="Green holds. Orange charges. Off discharges.">

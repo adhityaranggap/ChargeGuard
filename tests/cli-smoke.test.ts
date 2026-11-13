@@ -38,6 +38,21 @@ describe("cli smoke", () => {
     expect(r.out.length).toBeGreaterThan(0);
   });
 
+  test("help lists the calendar commands", () => {
+    const r = run(["help"]);
+    expect(r.out).toContain("trips [--json]");
+    expect(r.out).toContain("calendar on|off");
+  });
+
+  test("trips --json exits 0 with no trips file", () => {
+    const r = run(["trips", "--json"]);
+    expect(r.code).toBe(0);
+    const j = JSON.parse(r.out);
+    expect(j.access).toBeNull();
+    expect(j.trips).toEqual([]);
+    expect(j.next).toBeNull();
+  });
+
   test("unknown command exits 2", () => {
     expect(run(["no-such-command"]).code).toBe(2);
   });

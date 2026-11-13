@@ -14,9 +14,14 @@ import type {
   PlaceKind,
   RuntimeState,
   Snapshot,
+  Trip,
+  TripWindow,
 } from "./types";
 
 const BATTERY_WH = 72;
+// Share of the charger power that reaches the battery when no other power value exists.
+// The real value measured on a 30 W charger was 8.9 W. An early start is safer than a late one.
+const ADAPTER_CHARGE_FACTOR = 0.3;
 const SCHEDULE_WINDOW_MIN = 10;
 const CALIBRATION_HOLD_MIN = 60;
 const CALIBRATION_DRAIN_PCT = 15;
@@ -74,22 +79,39 @@ export function baseTarget(place: PlaceKind, cfg: Config): number {
 // Office window
 // ---------------------------------------------------------------------------
 
-function estimateMinutesToFull(snap: Snapshot): number | null {
+/**
+ * Minutes to 100%. The power comes from the first source that exists:
+ * the live battery power while charging, the learned charge power, then 30% of the charger power.
+ */
+function rawMinutesToFull(snap: Snapshot, learnedWatts: number | null): number | null {
   let watts: number | null = null;
-  if (snap.batteryWatts !== null && snap.batteryWatts > 0) {
+  if (snap.charging && snap.batteryWatts !== null && snap.batteryWatts >= 1) {
     watts = snap.batteryWatts;
+  } else if (learnedWatts !== null && learnedWatts >= 1) {
+    watts = learnedWatts;
   } else if (snap.adapterWatts !== null && snap.adapterWatts > 0) {
-    watts = Math.max(1, snap.adapterWatts * 0.6);
+    watts = Math.max(1, snap.adapterWatts * ADAPTER_CHARGE_FACTOR);
   }
   if (watts === null) return null;
   if (snap.percent >= 100) return 0;
   const wh = ((100 - snap.percent) / 100) * BATTERY_WH;
-  return Math.ceil((wh / watts) * 60);
+  return (wh / watts) * 60;
 }
 
-export function officeWindow(snap: Snapshot, cfg: Config, now: Date): OfficeWindow {
+/** Whole minutes to 100%, rounded up. null if no power source is known. */
+function estimateMinutesToFull(snap: Snapshot, learnedWatts: number | null = null): number | null {
+  const raw = rawMinutesToFull(snap, learnedWatts);
+  return raw === null ? null : Math.ceil(raw);
+}
+
+export function officeWindow(
+  snap: Snapshot,
+  cfg: Config,
+  now: Date,
+  learnedWatts: number | null = null,
+): OfficeWindow {
   const oh = cfg.officeHours;
-  const etaMin = estimateMinutesToFull(snap);
+  const etaMin = estimateMinutesToFull(snap, learnedWatts);
   const endMin = parseClock(oh.end);
   const applies = oh.enabled && oh.days.includes(now.getDay() as 0) && endMin !== null;
   if (!applies || endMin === null) {
@@ -105,6 +127,72 @@ export function officeWindow(snap: Snapshot, cfg: Config, now: Date): OfficeWind
 }
 
 // ---------------------------------------------------------------------------
+// Trip window
+// ---------------------------------------------------------------------------
+
+/** Times for one trip. Returns null if the start time is not valid. */
+function windowFor(
+  snap: Snapshot,
+  cfg: Config,
+  trip: Trip,
+  now: Date,
+  learnedWatts: number | null = null,
+): TripWindow | null {
+  const startMs = Date.parse(trip.start);
+  if (Number.isNaN(startMs)) return null;
+  const cal = cfg.calendar;
+  const travelEstimated = trip.travelMin === null;
+  const travelMin = trip.travelMin ?? cal.fallbackTravelMin;
+  const leaveMs = startMs - (travelMin + cal.arriveBufferMin) * 60000;
+  const etaMin = estimateMinutesToFull(snap, learnedWatts);
+  // The 1.2 margin covers the slow charge above 80%. It applies to the unrounded time, so the ETA is not rounded twice.
+  // The small offset removes float noise, for example 72.00000000000001.
+  const rawMin = rawMinutesToFull(snap, learnedWatts) ?? cfg.officeHours.leadMin;
+  const chargeMin = Math.ceil((rawMin * 12) / 10 - 1e-9);
+  const topupMs = leaveMs - chargeMin * 60000;
+  const nowMs = now.getTime();
+  const tooLate = nowMs > topupMs && etaMin !== null && etaMin > 0 && nowMs + chargeMin * 60000 > leaveMs;
+  return {
+    id: trip.id,
+    title: trip.title,
+    location: trip.location,
+    start: new Date(startMs).toISOString(),
+    leaveAt: new Date(leaveMs).toISOString(),
+    topupStart: new Date(topupMs).toISOString(),
+    travelMin,
+    travelEstimated,
+    chargeMin,
+    tooLate,
+  };
+}
+
+/** Times for one trip. The CLI uses it to show every trip, not only the next one. */
+export { windowFor as tripTimes };
+
+/** The next trip with a leave time that is not past the grace time. null if calendar trips are off or no trip fits. */
+export function tripWindow(
+  snap: Snapshot,
+  cfg: Config,
+  trips: Trip[],
+  now: Date,
+  learnedWatts: number | null = null,
+): TripWindow | null {
+  if (!cfg.calendar.enabled) return null;
+  const nowMs = now.getTime();
+  const graceMs = cfg.calendar.graceMin * 60000;
+  let best: TripWindow | null = null;
+  for (const trip of trips) {
+    // A known travel time below the minimum means the place is near. Do not top up for it.
+    if (trip.travelMin !== null && trip.travelMin < cfg.calendar.minTravelMin) continue;
+    const w = windowFor(snap, cfg, trip, now, learnedWatts);
+    if (w === null) continue;
+    if (!(nowMs < Date.parse(w.leaveAt) + graceMs)) continue;
+    if (best === null || Date.parse(w.leaveAt) < Date.parse(best.leaveAt)) best = w;
+  }
+  return best;
+}
+
+// ---------------------------------------------------------------------------
 // decide
 // ---------------------------------------------------------------------------
 
@@ -113,7 +201,7 @@ interface Pending {
   body: () => string;
 }
 
-export const decide: DecideFn = (snap, cfg, stateIn, now) => {
+export const decide: DecideFn = (snap, cfg, stateIn, now, ctx) => {
   const st: RuntimeState = {
     ...stateIn,
     firedRules: [...stateIn.firedRules],
@@ -156,8 +244,15 @@ export const decide: DecideFn = (snap, cfg, stateIn, now) => {
   st.lastAc = snap.ac;
   st.lastPlace = place;
 
+  // Learn the charge power. The ETA needs it while the battery holds and the live power is 0.
+  if (snap.ac && snap.charging && snap.batteryWatts !== null && snap.batteryWatts >= 1) {
+    const w = snap.batteryWatts;
+    st.lastChargeWatts = st.lastChargeWatts === null ? w : st.lastChargeWatts * 0.7 + w * 0.3;
+  }
+  const learned = st.lastChargeWatts;
+
   // 4. Office hours.
-  const win = officeWindow(snap, cfg, now);
+  const win = officeWindow(snap, cfg, now, learned);
   const endClock = win.end ? clockOf(new Date(win.end)) : cfg.officeHours.end;
   let officeTopup = false;
   if (place === "office" && win.topupStart && win.graceEnd) {
@@ -177,7 +272,52 @@ export const decide: DecideFn = (snap, cfg, stateIn, now) => {
     }
   }
 
+  // 4b. Calendar trips.
+  const trips = ctx?.trips ?? [];
+  const tripWin = tripWindow(snap, cfg, trips, now, learned);
+  if (st.tripTopup) {
+    const latchId = st.tripTopup.id;
+    if (!cfg.calendar.enabled || nowMs >= Date.parse(st.tripTopup.until) || !trips.some((t) => t.id === latchId)) {
+      st.tripTopup = null;
+    }
+  }
+  if (tripWin) {
+    const untilMs = Date.parse(tripWin.leaveAt) + cfg.calendar.graceMin * 60000;
+    if (nowMs >= Date.parse(tripWin.topupStart) && nowMs < untilMs) {
+      st.tripTopup = { id: tripWin.id, until: new Date(untilMs).toISOString() };
+    }
+  }
+  let tripActive = false;
+  let tripLeaveClock = "";
+  let tripTitle = "";
+  if (st.tripTopup) {
+    const latchId = st.tripTopup.id;
+    const latchTrip = trips.find((t) => t.id === latchId);
+    const w = tripWin && tripWin.id === latchId ? tripWin : latchTrip ? windowFor(snap, cfg, latchTrip, now, learned) : null;
+    if (w) {
+      tripActive = true;
+      tripLeaveClock = clockOf(new Date(w.leaveAt));
+      tripTitle = w.title;
+      target = 100;
+      if (snap.ac && st.tripTopupNotified !== w.id) {
+        st.tripTopupNotified = w.id;
+        // The plug text already tells about the top-up. Do not send two texts for one event.
+        if (!plugEvent) {
+          pending.push({
+            event: "tripTopupStart",
+            body: () => `Trip top-up started. Charges to 100% before you leave at ${tripLeaveClock} for ${tripTitle}.`,
+          });
+        }
+      }
+    }
+  }
+
   function plugBody(): string {
+    if (tripActive) {
+      const tail = `Charges to 100% before you leave at ${tripLeaveClock} for ${tripTitle}.`;
+      if (place === "away" || place === "offline") return `Plugged in. ${tail}`;
+      return `Plugged in at ${cfg.places[place].label}. ${tail}`;
+    }
     if (place === "away" && cfg.placeMode === "away") {
       return `Plugged in. Place is away, set by hand. Charges to ${base}%.`;
     }
@@ -384,7 +524,7 @@ export const decide: DecideFn = (snap, cfg, stateIn, now) => {
   } else if (snap.percent >= target) {
     finalMode = "holding";
   } else if (snap.charging) {
-    finalMode = officeTopup && target === 100 ? "topup" : "charging";
+    finalMode = (officeTopup || tripActive) && target === 100 ? "topup" : "charging";
   } else {
     finalMode = "sailing";
   }
@@ -398,6 +538,8 @@ export const decide: DecideFn = (snap, cfg, stateIn, now) => {
       summary = `Above ${target}%. macOS uses the battery down to ${target}%, then holds.`;
     } else if (finalMode === "holding") {
       summary = `Holding at ${target}%. macOS stops charging here.`;
+    } else if (tripActive) {
+      summary = `Charging to 100% before you leave at ${tripLeaveClock} for ${tripTitle}.`;
     } else if (officeTopup) {
       summary = `Charging to 100% before ${endClock}.`;
     } else if (place === "offline") {
@@ -414,6 +556,7 @@ export const decide: DecideFn = (snap, cfg, stateIn, now) => {
   }
   if (reason === null) {
     if (finalMode === "unplugged") reason = "unplugged";
+    else if (tripActive) reason = "trip-topup";
     else if (officeTopup) reason = "office-topup";
     else if (place === "offline") reason = "offline";
     else if (place === "away") reason = "away";
@@ -490,10 +633,29 @@ function describeAction(a: Config["schedule"][number]["action"]): string {
   }
 }
 
-export function nextChange(snap: Snapshot, cfg: Config, state: RuntimeState, now: Date): string | null {
+export function nextChange(
+  snap: Snapshot,
+  cfg: Config,
+  state: RuntimeState,
+  now: Date,
+  trips: Trip[] = [],
+): string | null {
   const place = resolvePlace(snap.routerMac, cfg);
-  const win = officeWindow(snap, cfg, now);
+  const win = officeWindow(snap, cfg, now, state.lastChargeWatts);
   const nowMs = now.getTime();
+  const officeApplies = place === "office" && !!win.topupStart && !!win.graceEnd && !!win.end;
+
+  // A trip comes first if its leave time is before the office end, or if there is no office window.
+  const tw = tripWindow(snap, cfg, trips, now, state.lastChargeWatts);
+  if (tw && nowMs < Date.parse(tw.leaveAt) && (!officeApplies || Date.parse(tw.leaveAt) < Date.parse(win.end!))) {
+    const leaveClock = clockOf(new Date(tw.leaveAt));
+    if (nowMs < Date.parse(tw.topupStart)) {
+      const drive = `${tw.travelEstimated ? "about " : ""}${Math.round(tw.travelMin)} min drive`;
+      return `Meeting ${tw.title} at ${clockOf(new Date(tw.start))}. Leave ${leaveClock}, ${drive}. Top-up starts ${clockOf(new Date(tw.topupStart))}.`;
+    }
+    const eta = win.etaMin ?? cfg.officeHours.leadMin;
+    return `Full by about ${clockOf(new Date(nowMs + eta * 60000))}. Leave ${leaveClock} for ${tw.title}.`;
+  }
 
   if (place === "office" && win.topupStart && win.graceEnd && win.end) {
     const start = Date.parse(win.topupStart);

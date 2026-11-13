@@ -19,6 +19,8 @@ export interface Place {
   routers: string[];
   /** Per-place limit. null = use Config.limit. */
   limit: number | null;
+  /** Street address for the travel time estimate. null = no address. Maximum 200 characters. */
+  address: string | null;
 }
 
 export interface OfficeHours {
@@ -58,7 +60,8 @@ export type NotifyEvent =
   | "officeTopupDone"
   | "heatPause"
   | "calibrationStep"
-  | "dischargeDone";
+  | "dischargeDone"
+  | "tripTopupStart";
 
 export interface Config {
   version: 1;
@@ -77,6 +80,20 @@ export interface Config {
   placeMode: PlaceMode;
   /** R4. */
   officeHours: OfficeHours;
+  /** Calendar trips. Charge to 100% before you leave for a meeting at another place. Default off. */
+  calendar: {
+    enabled: boolean;
+    /** Minutes to arrive before the meeting starts. 0..120. Default 10. */
+    arriveBufferMin: number;
+    /** Travel time in minutes when no estimate exists. 0..300. Default 45. */
+    fallbackTravelMin: number;
+    /** The top-up stays on until leave time plus this many minutes. 0..240. Default 30. */
+    graceMin: number;
+    /** Only meetings that start inside this many hours count. 1..72. Default 24. */
+    lookaheadH: number;
+    /** A trip with a known travel time below this many minutes is too near. It starts no top-up. 0..120. Default 10. */
+    minTravelMin: number;
+  };
   /** R8. */
   heat: { enabled: boolean; maxC: number; resumeC: number };
   /** R11. Default false. */
@@ -180,6 +197,12 @@ export interface RuntimeState {
   firedRules: string[];
   /** True while office top-up was announced for today, as "YYYY-MM-DD", to notify only once. */
   officeTopupNotified: string | null;
+  /** Latch for the trip top-up. It stays set until `until` (ISO), or until the trip leaves the list. */
+  tripTopup: { id: string; until: string } | null;
+  /** Id of the trip for which the top-up text was sent, to notify only once. */
+  tripTopupNotified: string | null;
+  /** Smoothed charge power in watts from earlier ticks, or null. The ETA uses it while the battery holds and the live power is 0. */
+  lastChargeWatts: number | null;
 }
 
 export type Mode =
@@ -235,7 +258,44 @@ export interface DecideResult {
 }
 
 /** Signature that src/policy.ts must export. Pure: no I/O, no Date.now(). */
-export type DecideFn = (snap: Snapshot, cfg: Config, state: RuntimeState, now: Date) => DecideResult;
+export type DecideFn = (
+  snap: Snapshot,
+  cfg: Config,
+  state: RuntimeState,
+  now: Date,
+  ctx?: { trips: Trip[] },
+) => DecideResult;
+
+/** One calendar meeting with a physical place. The calendar probe writes the list to ~/.chargeguard/trips.json. */
+export interface Trip {
+  id: string;
+  title: string;
+  /** ISO time. */
+  start: string;
+  location: string;
+  /** Drive time in minutes from the probe. null = no estimate. */
+  travelMin: number | null;
+  /** Place where the probe started the estimate. */
+  from: PlaceKind;
+}
+
+/** Times for the next trip. All times are ISO strings. */
+export interface TripWindow {
+  id: string;
+  title: string;
+  location: string;
+  start: string;
+  leaveAt: string;
+  topupStart: string;
+  /** Travel time in minutes that the policy uses, after the fallback. */
+  travelMin: number;
+  /** True when the fallback travel time was used. */
+  travelEstimated: boolean;
+  /** Minutes of charge time, with the 1.2 margin. */
+  chargeMin: number;
+  /** True when the top-up start is past and the battery cannot reach 100% before leaveAt. */
+  tooLate: boolean;
+}
 
 export interface OfficeWindow {
   /** ISO times for today. null when office hours do not apply today. */
@@ -279,6 +339,8 @@ export interface Status {
   office: OfficeWindow;
   /** One human line about the next change, or null. Example: "Top-up starts 15:30. Full by about 17:00." */
   next: string | null;
+  /** Next calendar trip, or null. */
+  trip: TripWindow | null;
   health: Health;
 }
 
@@ -288,6 +350,7 @@ export const PATHS = {
   config: "config.json",
   state: "state.json",
   status: "status.json",
+  trips: "trips.json",
   kick: "kick",
   log: "chargeguard.log",
 } as const;

@@ -45,6 +45,7 @@ It is free and open source, so you can read what it does to your Mac.
 - [Install](#install)
 - [First setup](#first-setup)
 - [Use the widget](#use-the-widget)
+- [Calendar trips](#calendar-trips)
 - [Command line](#command-line)
 - [How it works](#how-it-works)
 - [Safety](#safety)
@@ -63,6 +64,7 @@ It is free and open source, so you can read what it does to your Mac.
 | Places | Finds Home, Office, or Away from the router. A place can have more than one router. Away charges to 100%. |
 | Manual place | You can choose Home, Office, or Away by hand. Auto uses the router again. |
 | Office hours | On work days, charges to 100% before the end of the day. Then it goes back to the limit. |
+| Calendar trips | Reads meetings with a place. Charges to 100% before you leave. Off by default. |
 | Sailing | After the limit, charging starts again only below the limit minus a gap. The default gap is 5%. |
 | Top up | Charges to 100% one time. It stops when you disconnect the charger. |
 | Heat protection | Stops charging at 35 °C. It starts again at 32 °C. |
@@ -116,6 +118,7 @@ Click the gear on the widget to open Settings. All settings are there.
 | Places | Auto, Home, Office, or Away. Save or forget the routers for each place. |
 | Charge limit | 80, 90, or 100, or an exact value |
 | Office hours | Days, start, end, and lead time |
+| Calendar | On or off, Home and Office address, arrive buffer, fallback drive time, and **Grant calendar access** |
 | Protection | Heat pause, sailing gap, and Low Power Mode |
 | MagSafe LED | On or off |
 | Calibration and Schedule | Start a calibration, and add or remove rules |
@@ -123,6 +126,57 @@ Click the gear on the widget to open Settings. All settings are there.
 The card buttons do one-time actions: **Top up to 100%**, **Discharge**, and **Pause**.
 
 Themes: Auto, Dark, Light, Glass, Graphite, Midnight, Sand, and Contrast. Auto follows the macOS appearance.
+
+## Calendar trips
+
+ChargeGuard can charge to 100% before you leave for a meeting at another place. This feature is off by default.
+
+It makes two estimates for each meeting:
+
+1. **Drive time.** Apple Maps gives the drive time from your Home or Office address to the meeting place.
+2. **Charge time.** ChargeGuard estimates how long the battery needs to reach 100%.
+
+The formula in plain words:
+
+- Leave time = meeting start, minus drive time, minus the arrive buffer. The default buffer is 10 minutes.
+- Top-up start = leave time, minus the charge time times 1.2. The extra 20% is a margin, because charging is slower above 80%.
+- ChargeGuard charges to 100% from the top-up start until 30 minutes after the leave time. Then it goes back to the limit.
+
+Rules:
+
+- Only timed events with a physical place count. All-day events and online meetings are skipped.
+- ChargeGuard skips a place that Apple Maps cannot find. Room names such as "Meeting Room 3" are skipped.
+- If the drive is shorter than 10 minutes, ChargeGuard does not top up.
+- If the drive time is unknown, ChargeGuard uses 45 minutes. This happens at an Away place, or when you saved no address.
+
+Turn it on in the widget:
+
+1. Click the gear on the widget. Open **Settings > Calendar**.
+2. Type your **Home** and **Office** address.
+3. Click **Grant calendar access**. Click **Allow** when macOS asks.
+4. Turn **Calendar trips** on.
+
+Turn it on from the command line:
+
+```bash
+~/.chargeguard/bin/cg set places.home.address "1 Example Street, City"
+~/.chargeguard/bin/cg set places.office.address "2 Example Avenue, City"
+~/.chargeguard/bin/cg calendar on
+~/.chargeguard/bin/cg trips
+```
+
+macOS asks one time to give Calendar access to `osascript`. The widget runs the calendar script every 10 minutes.
+The script writes the trips to `~/.chargeguard/trips.json`. The daemon reads that file.
+
+Privacy: ChargeGuard does not use GPS or Location Services. Your addresses and meeting places go only to Apple Maps.
+Apple Maps does the address search and the drive time. Nothing else leaves your Mac.
+
+If it does not work:
+
+- **Access denied.** Open **System Settings > Privacy & Security > Calendars**. Allow `osascript` or the app that runs the widget.
+- **No trip shows.** Run `cg calendar refresh`. It shows the events that ChargeGuard found and the events that it skipped.
+- **A meeting is missing.** Check that the event has a time and a real street address. Room names are skipped.
+- **The drive time is 45 minutes.** Save an address for the place where you are, or go to Home or Office.
 
 ## Command line
 
@@ -135,10 +189,15 @@ The installer puts the `cg` command in `~/.chargeguard/bin`. It is optional. The
 ~/.chargeguard/bin/cg place use office
 ~/.chargeguard/bin/cg topup
 ~/.chargeguard/bin/cg set widget.theme midnight
+~/.chargeguard/bin/cg trips
+~/.chargeguard/bin/cg calendar on
+~/.chargeguard/bin/cg calendar refresh
+~/.chargeguard/bin/cg set places.home.address "1 Example Street, City"
+~/.chargeguard/bin/cg set calendar.arriveBufferMin 15
 ~/.chargeguard/bin/cg doctor
 ```
 
-Run `cg help` to see all commands. Add `--json` to `status` and `doctor` for JSON output.
+Run `cg help` to see all commands. Add `--json` to `status`, `trips`, and `doctor` for JSON output.
 You can use these commands in the Shortcuts app with a "Run Shell Script" action.
 
 ## How it works
@@ -151,11 +210,12 @@ widget (JXA window + WKWebView)  ──run cg──▶  cg CLI  ──config.jso
                                                     sudo -n cg-helper ──▶ native limit, adapter, LED
 ```
 
-- **Daemon.** `src/daemon.ts` runs as a launchd agent. It reads the battery, asks the policy for a decision, and applies it. It writes `~/.chargeguard/status.json`.
+- **Daemon.** `src/daemon.ts` runs as a launchd agent. It reads the battery, asks the policy for a decision, and applies it. It writes `~/.chargeguard/status.json`. The status has a `trip` field for the next calendar trip.
 - **Policy.** `src/policy.ts` is a pure function. It takes the battery data, the config, the state, and the time, and it returns the target and the mode. Tests cover it.
 - **Place.** ChargeGuard does not use GPS or Location Services. It reads the MAC address of the default gateway with `route` and `arp`. It reads the router only at start, on plug-in, on wake, on a network change, or after 10 minutes on charger power. It never reads the router on battery power.
 - **Charge limit.** ChargeGuard sets the native macOS charge limit. macOS keeps the limit, also when ChargeGuard is not running.
 - **Hardware writes.** One root helper, `cg-helper`, does 4 jobs: limit, adapter on or off, LED, and Low Power Mode. A sudoers rule allows only this helper, with no password.
+- **Calendar trips.** `scripts/cg-calendar.js` reads the calendar and asks Apple Maps for the drive time. It writes `~/.chargeguard/trips.json`. The policy reads the trips from the daemon.
 - **Widget.** `widget/standalone/host.js` opens a clear window below normal windows. It shows `widget/chargeguard.widget/index.jsx` with local React and Babel files, so it needs no network. The same widget also runs in Übersicht.
 
 ## Safety
@@ -196,7 +256,7 @@ The script writes `dist/ChargeGuard-0.1.0.dmg`. It bundles Bun from `~/.bun/bin/
 ```
 src/                 daemon, policy, config, sensors, router read, CLI
 widget/              desktop widget: Übersicht widget and the standalone host
-scripts/             install, root install, uninstall, root helper
+scripts/             install, root install, uninstall, root helper, calendar probe
 packaging/           disk image script, installer and uninstaller apps, README for users
 launchd/             launchd agent templates
 swiftbar/, hooks/    optional menu bar plugin and sleepwatcher hooks
