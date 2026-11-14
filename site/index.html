@@ -1,0 +1,702 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ChargeGuard: battery charge manager for macOS</title>
+<meta name="description" content="ChargeGuard holds your MacBook battery at 80% at Home and at the Office. At other places, it charges to 100%. Free and open source, GPL-3.0.">
+<meta name="color-scheme" content="light dark">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<a class="skip" href="#main">Skip to the content</a>
+
+<header class="masthead">
+  <div class="frame">
+    <div class="masthead-inner">
+      <div>
+        <p class="mast-label">Manual for macOS, version 0.2.0</p>
+        <h1>ChargeGuard</h1>
+        <p class="lede">ChargeGuard holds your MacBook battery at 80% at Home and at the Office. At other places, it charges to 100%.</p>
+        <p>It finds the place from your Wi-Fi router. A widget on the desktop shows the battery and has all settings.</p>
+
+        <p class="note-box"><strong>NOTE:</strong> ChargeGuard is a beta. It is tested on one MacBook Pro M5 with macOS 27.2.1.</p>
+
+        <p class="download">
+          <a class="btn" href="https://github.com/adhityaranggap/ChargeGuard/releases/download/v0.2.0/ChargeGuard-0.2.0.dmg">Download ChargeGuard 0.2.0, 2026-11-14</a>
+        </p>
+        <p class="dl-meta">File: ChargeGuard-0.2.0.dmg. Pre-release. SHA-256: a82368b450d5c958f1c1fbeec4ac2c9dc8462b9465e91d37c9961631c0c74de6</p>
+        <p class="links">
+          <a href="https://github.com/adhityaranggap/ChargeGuard/releases">All releases</a>
+          <a href="https://github.com/adhityaranggap/ChargeGuard">Source code on GitHub</a>
+        </p>
+      </div>
+
+      <figure class="shot">
+        <img src="widget-settings.webp" width="796" height="1644" alt="The ChargeGuard widget with the Settings panel open. It shows 82%, the Home place, and the Places and Charge limit settings.">
+        <figcaption>The widget with the Settings panel open.</figcaption>
+      </figure>
+    </div>
+  </div>
+</header>
+
+<div class="frame">
+<div class="layout">
+
+<nav class="toc" aria-label="Table of contents">
+  <h2>Contents</h2>
+  <ol>
+    <li><a href="#why"><span class="num">1</span>Why ChargeGuard</a></li>
+    <li><a href="#policy"><span class="num">2</span>How the policy decides</a></li>
+    <li><a href="#calendar"><span class="num">3</span>Calendar trips</a></li>
+    <li><a href="#privacy"><span class="num">4</span>Privacy</a></li>
+    <li><a href="#cli"><span class="num">5</span>The cg command</a></li>
+    <li><a href="#widget"><span class="num">6</span>The widget</a></li>
+    <li><a href="#architecture"><span class="num">7</span>Architecture</a></li>
+    <li><a href="#helper"><span class="num">8</span>The root helper</a></li>
+    <li><a href="#install"><span class="num">9</span>Install</a></li>
+    <li><a href="#uninstall"><span class="num">10</span>Uninstall</a></li>
+    <li><a href="#build"><span class="num">11</span>Build from source</a></li>
+    <li><a href="#releases"><span class="num">12</span>Releases</a></li>
+    <li><a href="#license"><span class="num">13</span>License</a></li>
+  </ol>
+</nav>
+
+<main id="main">
+
+<!-- 1 -->
+<section id="why" aria-labelledby="why-h">
+  <h2 id="why-h"><span class="num">1</span>Why ChargeGuard</h2>
+  <p>A lithium-ion battery wears out faster when it stays at 100% for a long time, and when it is hot. A MacBook that is on the charger all day at a desk stays full and warm for hours. A limit near 80% makes the battery last more years.</p>
+  <p>But one fixed limit does not fit a normal day.</p>
+  <ul>
+    <li><strong>At home and at the office,</strong> the Mac is on the charger for hours. It needs a limit, for example 80%.</li>
+    <li><strong>At the end of the office day,</strong> you need a full battery for the trip home and the evening. You must remember to remove the limit before you leave, and to set it again the next day.</li>
+    <li><strong>At a café, on a trip, or at a client,</strong> you need 100%, because the next charger is far away.</li>
+  </ul>
+  <p>macOS has a native charge limit, but it is one fixed value. It does not know where you are, and it does not change during the day. Optimized Battery Charging learns your habits, but you cannot control when it charges to 100%.</p>
+  <p>ChargeGuard does this work automatically.</p>
+  <ol>
+    <li>It finds the place from your Wi-Fi router. It does not use GPS or Location Services.</li>
+    <li>It holds the limit at Home and at the Office, and it charges to 100% at other places.</li>
+    <li>On work days, it charges to 100% before the office day ends. The next day, it goes back to the limit.</li>
+    <li>It shows what it does on a desktop widget, so you always know why the Mac charges or does not charge.</li>
+  </ol>
+  <p>It is free and open source, so you can read what it does to your Mac.</p>
+  <p class="src-note">Source: README.md, section Why ChargeGuard.</p>
+</section>
+
+<!-- 2 -->
+<section id="policy" aria-labelledby="policy-h">
+  <h2 id="policy-h"><span class="num">2</span>How the policy decides</h2>
+  <p>The policy is the function <code>decide</code> in <code>src/policy.ts</code>. It has no side effects. It takes the battery data, the config, the saved state, and the time. It returns the target, the mode, the native limit, the LED color, and the notices. The daemon applies the result.</p>
+
+  <h3 id="places">Places</h3>
+  <p>The place comes from the MAC address of the default gateway, which is your router. ChargeGuard does not use GPS. The function <code>resolvePlace</code> works in this order.</p>
+  <div class="scroll" role="region" aria-label="Place rules" tabindex="0">
+    <table class="narrow">
+      <caption>Place rules, in the order that the code checks them</caption>
+      <thead><tr><th>Condition</th><th>Place</th></tr></thead>
+      <tbody>
+        <tr><td>The place mode is not <code>auto</code></td><td>The place that you chose: <code>home</code>, <code>office</code>, or <code>away</code>. This also holds with no network.</td></tr>
+        <tr><td>There is no router address</td><td><code>offline</code></td></tr>
+        <tr><td>The router address is not a valid MAC</td><td><code>away</code></td></tr>
+        <tr><td>The router is saved for Home</td><td><code>home</code></td></tr>
+        <tr><td>The router is saved for Office</td><td><code>office</code></td></tr>
+        <tr><td>Any other router</td><td><code>away</code></td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p>The base target is the limit of the place, or the general limit. The default is 80%. At <code>away</code> and <code>offline</code>, the base target is <code>awayLimit</code>. The default is 100%.</p>
+
+  <h3 id="order">Decision order</h3>
+  <p>Each step can change the target. A later step wins over an earlier step. The list follows the code.</p>
+  <ol class="decision">
+    <li>
+      <p><strong>Place and base target.</strong> Find the place. Set the target to the base target.</p>
+    </li>
+    <li>
+      <p><strong>Plug and unplug events.</strong> Compare the charger state with the last tick. A plug-in sends a notice that tells the place and the target. An unplug sends a notice with the battery percent. An unplug also cancels a top-up that you started by hand.</p>
+    </li>
+    <li>
+      <p><strong>Office top-up.</strong> The place must be <code>office</code>. The target is 100% from the end of the work day minus the lead time, until the end plus the grace time. Defaults: days Monday to Friday, start 08:00, end 17:00, lead 90 min, grace 120 min.</p>
+    </li>
+    <li>
+      <p><strong>Calendar trip top-up.</strong> If calendar trips are on and a trip is near, the target is 100% from the top-up start until 30 min after the leave time. See <a href="#calendar">section 3</a>.</p>
+    </li>
+    <li>
+      <p><strong>Schedule.</strong> A rule fires in a 10 min window that starts at the time of the rule. A rule does not start while an override from the user is active. A rule makes one of four overrides: top-up, limit, discharge, or calibration.</p>
+    </li>
+    <li>
+      <p><strong>Overrides.</strong> An override replaces the target. See the table below.</p>
+    </li>
+    <li>
+      <p><strong>Heat.</strong> The battery is hot at 35 °C or more. Charging stops. It starts again at 32 °C or less. Heat protection does not apply during pause, discharge, and the discharge steps of calibration.</p>
+    </li>
+    <li>
+      <p><strong>Native limit.</strong> The native limit is the target, as a whole number from 10 to 100. During heat protection, it is the current percent.</p>
+    </li>
+    <li>
+      <p><strong>Safety.</strong> Below 10%, the adapter is always on. The policy never turns the adapter off below 10%.</p>
+    </li>
+    <li>
+      <p><strong>Mode, LED, Low Power Mode, sleep, notices.</strong> The policy sets the mode from the table in the next part. Then it sets the LED color, Low Power Mode, sleep prevention, and the notices that you did not turn off.</p>
+    </li>
+  </ol>
+  <p class="src-note">Source: src/policy.ts, function decide, steps 1 to 15 in the code comments. src/config.ts, DEFAULT_CONFIG.</p>
+
+  <h3 id="overrides">Overrides</h3>
+  <div class="scroll" role="region" aria-label="Overrides" tabindex="0">
+    <table class="wide">
+      <caption>The four override kinds, and pause</caption>
+      <thead><tr><th>Override</th><th>What the policy does</th><th>How it starts</th></tr></thead>
+      <tbody>
+        <tr>
+          <td><strong>Pause</strong></td>
+          <td>Target 100%, native limit 100%, adapter on. Mode <code>paused</code>. ChargeGuard stops management and macOS charges normally. Heat protection is off.</td>
+          <td><code>cg pause</code>. <code>cg resume</code> ends it.</td>
+        </tr>
+        <tr>
+          <td><strong>Top up</strong></td>
+          <td>Charges to 100% one time. A schedule rule <code>limit:N</code> uses the same override with the target N. It ends when you disconnect the charger.</td>
+          <td><code>cg topup</code>. <code>cg topup stop</code> ends it.</td>
+        </tr>
+        <tr>
+          <td><strong>Discharge</strong></td>
+          <td>Uses the battery while the charger is connected, down to N%. The adapter is off. If the lid is closed, the discharge waits until the lid opens, unless <code>dischargeInClamshell</code> is on. The default is off. The override ends at N%.</td>
+          <td><code>cg discharge N</code>. N is 10 to 99.</td>
+        </tr>
+        <tr>
+          <td><strong>Calibration</strong></td>
+          <td>Four steps. 1: discharge to 15%. 2: charge to 100%. 3: hold at 100% for 60 min. 4: discharge to the limit. The charger must stay connected.</td>
+          <td><code>cg calibrate</code>. <code>cg calibrate stop</code> ends it.</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3 id="modes">Modes</h3>
+  <p>The status shows one of these mode names. The names are from the type <code>Mode</code> in <code>src/types.ts</code>.</p>
+  <div class="scroll" role="region" aria-label="Modes" tabindex="0">
+    <table>
+      <caption>Modes</caption>
+      <thead><tr><th>Mode</th><th>Meaning</th></tr></thead>
+      <tbody>
+        <tr><td><code>holding</code></td><td>The percent is at the target or above it. Charging is off. The adapter is on.</td></tr>
+        <tr><td><code>charging</code></td><td>The battery charges toward the target.</td></tr>
+        <tr><td><code>sailing</code></td><td>The percent is below the target and the charger is connected, but charging is off. macOS decides when charging starts again.</td></tr>
+        <tr><td><code>topup</code></td><td>The battery charges to 100% because of an override, office hours, or a calendar trip.</td></tr>
+        <tr><td><code>discharging</code></td><td>The adapter is off. The Mac uses the battery.</td></tr>
+        <tr><td><code>calibrating</code></td><td>A calibration is active.</td></tr>
+        <tr><td><code>heat</code></td><td>Heat protection blocks charging.</td></tr>
+        <tr><td><code>paused</code></td><td>Management is off. macOS uses its default behavior.</td></tr>
+        <tr><td><code>unplugged</code></td><td>The Mac is on battery power.</td></tr>
+        <tr><td><code>error</code></td><td>The fail-safe is active.</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p>About sailing: the config key <code>sail</code> has a range of 0 to 20 and a default of 5. The product requirements in <code>docs/PRD.md</code> say that macOS controls the restart point and that the key is for display. The widget draws the sail band from this value.</p>
+
+  <h3 id="defaults">Defaults</h3>
+  <div class="scroll" role="region" aria-label="Default settings" tabindex="0">
+    <table>
+      <caption>Default values from <code>src/config.ts</code></caption>
+      <thead><tr><th>Setting</th><th>Default</th><th>Range or note</th></tr></thead>
+      <tbody>
+        <tr><td><code>limit</code></td><td>80</td><td>10 to 100</td></tr>
+        <tr><td><code>awayLimit</code></td><td>100</td><td>10 to 100</td></tr>
+        <tr><td><code>sail</code></td><td>5</td><td>0 to 20</td></tr>
+        <tr><td><code>placeMode</code></td><td>auto</td><td>auto, home, office, away</td></tr>
+        <tr><td><code>officeHours.days</code></td><td>Monday to Friday</td><td>0 is Sunday, 6 is Saturday</td></tr>
+        <tr><td><code>officeHours.start</code>, <code>.end</code></td><td>08:00, 17:00</td><td>24 hour clock, local time</td></tr>
+        <tr><td><code>officeHours.leadMin</code></td><td>90</td><td>0 to 240</td></tr>
+        <tr><td><code>officeHours.graceMin</code></td><td>120</td><td>0 to 480</td></tr>
+        <tr><td><code>heat.maxC</code>, <code>heat.resumeC</code></td><td>35, 32</td><td>Heat protection is on by default</td></tr>
+        <tr><td><code>magsafeLed</code></td><td>true</td><td></td></tr>
+        <tr><td><code>lowPower</code></td><td>off, below 20%</td><td>Below percent: 5 to 50</td></tr>
+        <tr><td><code>autoDischarge</code>, <code>dischargeInClamshell</code></td><td>false, false</td><td></td></tr>
+        <tr><td><code>stopChargingWhenSleeping</code>, <code>sleepControl</code></td><td>true, true</td><td></td></tr>
+        <tr><td><code>calendar.enabled</code></td><td>false</td><td>See section 3</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p class="src-note">Source: src/config.ts, DEFAULT_CONFIG and validateConfig. src/policy.ts. docs/PRD.md, requirement R6.</p>
+</section>
+
+<!-- 3 -->
+<section id="calendar" aria-labelledby="calendar-h">
+  <h2 id="calendar-h"><span class="num">3</span>Calendar trips</h2>
+  <p>ChargeGuard can charge to 100% before you leave for a meeting at another place. This feature is off by default. It is new in version 0.2.0.</p>
+  <p>It reads meetings from the macOS calendar through EventKit. A meeting must have a time and a physical location. The script <code>scripts/cg-calendar.js</code> skips all-day events, events with no location, and online meetings. It also skips a location that Apple Maps cannot find. A room name such as "Meeting Room 3" is an example.</p>
+
+  <h3 id="trip-estimates">Two estimates</h3>
+  <ol>
+    <li><strong>Drive time.</strong> Apple Maps gives the drive time from your saved Home or Office address to the meeting place. The script asks only when the current place is Home or Office and it has an address.</li>
+    <li><strong>Charge time.</strong> ChargeGuard estimates how long the battery needs to reach 100%. It uses the live battery power while the Mac charges. Then it uses the charge power that it learned. If neither exists, it uses 30% of the charger power.</li>
+  </ol>
+
+  <h3 id="trip-formulas">Formulas</h3>
+  <div class="formula" role="group" aria-label="Formulas">
+    <div>leaveAt&nbsp;&nbsp;&nbsp;&nbsp;= start - travelMin - arriveBufferMin</div>
+    <div>topupStart = leaveAt - ceil(minutesToFull &times; 1.2)</div>
+  </div>
+  <p>The factor 1.2 adds 20% for a margin, because charging is slower above 80%. The policy applies it to the time that is not yet rounded, so it does not round twice. The names are from <code>windowFor</code> in <code>src/policy.ts</code>. The defaults are below.</p>
+  <div class="scroll" role="region" aria-label="Calendar settings" tabindex="0">
+    <table>
+      <caption>Calendar settings</caption>
+      <thead><tr><th>Setting</th><th>Default</th><th>Range</th><th>Meaning</th></tr></thead>
+      <tbody>
+        <tr><td><code>calendar.arriveBufferMin</code></td><td>10</td><td>0 to 120</td><td>Minutes to arrive before the meeting starts.</td></tr>
+        <tr><td><code>calendar.fallbackTravelMin</code></td><td>45</td><td>0 to 300</td><td>Travel time when no estimate exists.</td></tr>
+        <tr><td><code>calendar.graceMin</code></td><td>30</td><td>0 to 240</td><td>The top-up stays on until the leave time plus this many minutes.</td></tr>
+        <tr><td><code>calendar.lookaheadH</code></td><td>24</td><td>1 to 72</td><td>Only meetings that start inside this many hours count.</td></tr>
+        <tr><td><code>calendar.minTravelMin</code></td><td>10</td><td>0 to 120</td><td>A known drive time below this value is too near. No top-up starts.</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3 id="trip-example">Worked example</h3>
+  <p><span class="label">Example</span>The times below are made up. They are not real data.</p>
+  <div class="scroll" role="region" aria-label="Worked example" tabindex="0">
+    <table class="narrow">
+      <caption>Example: a meeting at 14:00</caption>
+      <thead><tr><th>Item</th><th>Value</th></tr></thead>
+      <tbody>
+        <tr><td>Meeting start</td><td>14:00</td></tr>
+        <tr><td>Drive time from Apple Maps, <code>travelMin</code></td><td>30 min</td></tr>
+        <tr><td>Arrive buffer, <code>arriveBufferMin</code>, default</td><td>10 min</td></tr>
+        <tr><td><code>leaveAt</code> = 14:00 - 30 min - 10 min</td><td>13:20</td></tr>
+        <tr><td>Time to 100%, <code>minutesToFull</code></td><td>50 min</td></tr>
+        <tr><td>Charge time with margin = ceil(50 &times; 1.2)</td><td>60 min</td></tr>
+        <tr><td><code>topupStart</code> = 13:20 - 60 min</td><td>12:20</td></tr>
+        <tr><td>Charge to 100% until</td><td>13:50, that is the leave time plus 30 min</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p>After 13:50, the Mac goes back to the limit.</p>
+
+  <h3 id="trip-rules">More rules from the code</h3>
+  <ul>
+    <li>If the drive time is known and is below 10 min, ChargeGuard does not top up.</li>
+    <li>If the drive time is unknown, ChargeGuard uses 45 min. This happens at an Away place, or when you saved no address.</li>
+    <li>If the battery cannot reach 100% before the leave time, the status shows that the top-up is too late.</li>
+    <li>The script keeps a travel time for 60 min before it asks Apple Maps again.</li>
+  </ul>
+
+  <h3 id="trip-setup">Turn it on</h3>
+  <p>In the widget:</p>
+  <ol>
+    <li>Click the gear on the widget. Open <kbd>Settings</kbd> and then <kbd>Calendar</kbd>.</li>
+    <li>Type your <kbd>Home</kbd> and <kbd>Office</kbd> address.</li>
+    <li>Click <kbd>Grant calendar access</kbd>. Click <kbd>Allow</kbd> when macOS asks.</li>
+    <li>Turn <kbd>Calendar trips</kbd> on.</li>
+  </ol>
+  <p>On the command line:</p>
+<pre><code>~/.chargeguard/bin/cg set places.home.address "1 Example Street, City"
+~/.chargeguard/bin/cg set places.office.address "2 Example Avenue, City"
+~/.chargeguard/bin/cg calendar on
+~/.chargeguard/bin/cg trips</code></pre>
+  <p>macOS asks one time to give Calendar access to <code>osascript</code>. The widget runs the calendar script every 10 minutes. The script writes the trips to <code>~/.chargeguard/trips.json</code>. The daemon reads that file.</p>
+
+  <h3 id="trip-help">If it does not work</h3>
+  <dl class="defs">
+    <dt>Access denied</dt>
+    <dd>Open <kbd>System Settings</kbd>, <kbd>Privacy &amp; Security</kbd>, <kbd>Calendars</kbd>. Allow <code>osascript</code> or the app that runs the widget.</dd>
+    <dt>No trip shows</dt>
+    <dd>Run <code>cg calendar refresh</code>. It shows the events that ChargeGuard found and the events that it skipped.</dd>
+    <dt>A meeting does not show</dt>
+    <dd>Make sure that the event has a time and a real street address. Room names are skipped.</dd>
+    <dt>The drive time is 45 minutes</dt>
+    <dd>Save an address for the place where you are, or go to Home or Office.</dd>
+  </dl>
+  <p class="src-note">Source: README.md, section Calendar trips. scripts/cg-calendar.js. src/policy.ts, functions windowFor and tripWindow. src/config.ts. Release notes for v0.2.0.</p>
+</section>
+
+<!-- 4 -->
+<section id="privacy" aria-labelledby="privacy-h">
+  <h2 id="privacy-h"><span class="num">4</span>Privacy</h2>
+  <ul>
+    <li>ChargeGuard does not use GPS or Location Services.</li>
+    <li>Your addresses stay on your Mac. Only Apple Maps gets them. Apple Maps does the address search and the drive time.</li>
+    <li>Your meeting places go only to Apple Maps. Nothing else leaves your Mac.</li>
+    <li>The place comes from the MAC address of your router. The code reads it with <code>route</code> and <code>arp</code>. No Wi-Fi permission is necessary.</li>
+    <li>ChargeGuard reads the router only at start, on plug-in, on wake, on a network change, or after 10 minutes on charger power.</li>
+    <li>ChargeGuard never reads the router on battery power.</li>
+    <li>The widget uses local React and Babel files. It needs no network.</li>
+    <li>The source code is open. You can read what ChargeGuard does to your Mac.</li>
+  </ul>
+  <p class="src-note">Source: README.md, sections Calendar trips and How it works. src/net.ts. widget/standalone/vendor.</p>
+</section>
+
+<!-- 5 -->
+<section id="cli" aria-labelledby="cli-h">
+  <h2 id="cli-h"><span class="num">5</span>The cg command</h2>
+  <p>The installer puts the <code>cg</code> command at <code>~/.chargeguard/bin/cg</code>. It is optional. The widget does the same jobs. Run <code>cg help</code> to see all commands.</p>
+  <p>Add <code>--json</code> to <code>status</code>, <code>doctor</code>, and <code>trips</code> for JSON output. You can use these commands in the Shortcuts app with a "Run Shell Script" action.</p>
+
+  <div class="scroll" role="region" aria-label="Commands" tabindex="0">
+    <table class="wide">
+      <caption>Commands, from the help text in <code>src/cli.ts</code></caption>
+      <thead><tr><th>Command</th><th>What it does</th></tr></thead>
+      <tbody>
+        <tr><th colspan="2">Show</th></tr>
+        <tr><td><code>status [--json]</code></td><td>Show the state now.</td></tr>
+        <tr><td><code>doctor [--json]</code></td><td>Check the install.</td></tr>
+        <tr><td><code>trips [--json]</code></td><td>Show the calendar trips and the leave times.</td></tr>
+        <tr><td><code>menubar</code></td><td>Print SwiftBar text.</td></tr>
+        <tr><th colspan="2">Settings</th></tr>
+        <tr><td><code>limit &lt;10..100&gt;</code></td><td>Set the charge limit in percent.</td></tr>
+        <tr><td><code>set &lt;key&gt; &lt;value&gt;</code></td><td>Change one setting. An address is text. Use <code>null</code> to clear it. Keys are in the list below.</td></tr>
+        <tr><td><code>place save home|office [--router &lt;mac&gt;]</code></td><td>Save a router for a place. Without <code>--router</code>, it saves the current router.</td></tr>
+        <tr><td><code>place forget home|office [--router &lt;mac&gt;]</code></td><td>Forget one router, or all routers, for a place.</td></tr>
+        <tr><td><code>place list</code></td><td>Show the saved routers.</td></tr>
+        <tr><td><code>place use auto|home|office|away</code></td><td>Set the place by hand. <code>auto</code> uses the router again.</td></tr>
+        <tr><td><code>office-hours on|off</code></td><td>Turn office hours on or off.</td></tr>
+        <tr><td><code>office-hours set [--start HH:MM] [--end HH:MM] [--lead N] [--grace N] [--days 1,2,3,4,5]</code></td><td>Change the office hours.</td></tr>
+        <tr><td><code>calendar on|off</code></td><td>Turn calendar trips on or off.</td></tr>
+        <tr><td><code>calendar refresh</code></td><td>Run the calendar probe now and show the result.</td></tr>
+        <tr><td><code>schedule list</code></td><td>Show the schedule rules.</td></tr>
+        <tr><td><code>schedule add --days 1,2 --time HH:MM --action topup|calibrate|limit:N|discharge:N</code></td><td>Add a schedule rule.</td></tr>
+        <tr><td><code>schedule rm &lt;id&gt;</code></td><td>Remove a schedule rule.</td></tr>
+        <tr><th colspan="2">Actions</th></tr>
+        <tr><td><code>topup [stop]</code></td><td>Charge to 100 percent once.</td></tr>
+        <tr><td><code>discharge &lt;N&gt;|stop</code></td><td>Use the battery on AC down to N percent.</td></tr>
+        <tr><td><code>calibrate [stop]</code></td><td>Start or stop a calibration.</td></tr>
+        <tr><td><code>pause</code> | <code>resume</code></td><td>Stop or start management.</td></tr>
+        <tr><th colspan="2">System</th></tr>
+        <tr><td><code>init</code></td><td>Write the default config if it does not exist.</td></tr>
+        <tr><td><code>daemon</code></td><td>Run the daemon in the foreground.</td></tr>
+        <tr><td><code>hook sleep|wake</code></td><td>Called by sleepwatcher.</td></tr>
+        <tr><td><code>help</code></td><td>Show the help text.</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3 id="cli-keys">Keys for <code>cg set</code></h3>
+<pre><code>sail, awayLimit, heat.enabled, heat.maxC, heat.resumeC,
+autoDischarge, dischargeInClamshell, stopChargingWhenSleeping,
+sleepControl, lowPower.enabled, lowPower.belowPct, magsafeLed,
+menubar.icon, menubar.showPercent, widget.corner,
+widget.theme, widget.scale, widget.panelHeight,
+placeMode, notifications.&lt;event&gt;,
+calendar.enabled, calendar.arriveBufferMin,
+calendar.fallbackTravelMin, calendar.graceMin,
+calendar.lookaheadH, calendar.minTravelMin,
+places.home.address, places.office.address</code></pre>
+  <p>The notice events are <code>plug</code>, <code>unplug</code>, <code>officeTopupStart</code>, <code>officeTopupDone</code>, <code>tripTopupStart</code>, <code>heatPause</code>, <code>calibrationStep</code>, and <code>dischargeDone</code>.</p>
+
+  <h3 id="cli-examples">Examples</h3>
+<pre><code>~/.chargeguard/bin/cg status
+~/.chargeguard/bin/cg limit 80
+~/.chargeguard/bin/cg place save home
+~/.chargeguard/bin/cg place use office
+~/.chargeguard/bin/cg topup
+~/.chargeguard/bin/cg set widget.theme midnight
+~/.chargeguard/bin/cg trips
+~/.chargeguard/bin/cg calendar on
+~/.chargeguard/bin/cg calendar refresh
+~/.chargeguard/bin/cg set calendar.arriveBufferMin 15
+~/.chargeguard/bin/cg doctor</code></pre>
+  <p class="src-note">Source: src/cli.ts, the HELP text and the function main. README.md, section Command line.</p>
+</section>
+
+<!-- 6 -->
+<section id="widget" aria-labelledby="widget-h">
+  <h2 id="widget-h"><span class="num">6</span>The widget</h2>
+  <p>Click the gear on the widget to open Settings. All settings are there. The card buttons do one-time actions: <kbd>Top up to 100%</kbd>, <kbd>Discharge</kbd>, and <kbd>Pause</kbd>.</p>
+  <div class="scroll" role="region" aria-label="Widget settings" tabindex="0">
+    <table>
+      <caption>Settings sections</caption>
+      <thead><tr><th>Section</th><th>Settings</th></tr></thead>
+      <tbody>
+        <tr><td>Widget</td><td>Theme, size, panel height, and corner</td></tr>
+        <tr><td>Places</td><td>Auto, Home, Office, or Away. Save or forget the routers for each place.</td></tr>
+        <tr><td>Charge limit</td><td>80, 90, or 100, or an exact value</td></tr>
+        <tr><td>Office hours</td><td>Days, start, end, and lead time</td></tr>
+        <tr><td>Calendar</td><td>On or off, Home and Office address, arrive buffer, fallback drive time, and Grant calendar access</td></tr>
+        <tr><td>Protection</td><td>Heat pause, sailing gap, and Low Power Mode</td></tr>
+        <tr><td>MagSafe LED</td><td>On or off</td></tr>
+        <tr><td>Calibration and Schedule</td><td>Start a calibration, and add or remove rules</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3 id="widget-look">Look and size</h3>
+  <ul>
+    <li><strong>Themes:</strong> 8. They are Auto, Dark, Light, Glass, Graphite, Midnight, Sand, and Contrast. Auto follows the macOS appearance.</li>
+    <li><strong>Size:</strong> 70% to 150%, in steps of 5. The default is 100%.</li>
+    <li><strong>Panel height:</strong> the maximum height with the Settings panel open, as a percent of the screen height. The range is 40 to 100. The default is 85.</li>
+    <li><strong>Corner:</strong> top-left, top-right, bottom-left, or bottom-right. The default is bottom-left.</li>
+  </ul>
+
+  <h3 id="widget-run">How it runs</h3>
+  <p>The file <code>widget/standalone/host.js</code> opens a clear window below the normal windows. It is a JXA window with a WKWebView. It shows <code>widget/chargeguard.widget/index.jsx</code> with local React and Babel files, so it needs no network. The same widget also runs in Übersicht.</p>
+
+  <h3 id="widget-menubar">Menu bar</h3>
+  <p>The menu bar icon is optional. Install SwiftBar from <a href="https://swiftbar.app">swiftbar.app</a>, then install ChargeGuard again.</p>
+
+  <h3 id="widget-led">MagSafe LED</h3>
+  <div class="scroll" role="region" aria-label="LED colors" tabindex="0">
+    <table class="narrow">
+      <caption>LED colors</caption>
+      <thead><tr><th>Color</th><th>Meaning</th></tr></thead>
+      <tbody>
+        <tr><td>Green</td><td>The battery holds.</td></tr>
+        <tr><td>Orange</td><td>The battery charges.</td></tr>
+        <tr><td>Off</td><td>The battery discharges.</td></tr>
+        <tr><td>System</td><td>macOS controls the LED. This applies when the LED setting is off, during pause, during heat protection, and on battery power.</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p class="src-note">Source: README.md, sections Features and Use the widget. src/config.ts. src/policy.ts, step 11 (LED). widget/standalone/host.js.</p>
+</section>
+
+<!-- 7 -->
+<section id="architecture" aria-labelledby="architecture-h">
+  <h2 id="architecture-h"><span class="num">7</span>Architecture</h2>
+<pre class="diagram" aria-label="Architecture diagram: the widget runs cg, cg writes config.json and kicks the daemon, the daemon writes status.json for the widget, and the daemon calls cg-helper through sudo to set the limit, the adapter, and the LED."><code>widget (JXA window + WKWebView)  ──run cg──▶  cg CLI  ──config.json + kick──▶  daemon (Bun)
+        ▲                                                                          │
+        └──────────────────────── status.json ◀─────────────────────────────────┤
+                                                                                   ▼
+                                                    sudo -n cg-helper ──▶ native limit, adapter, LED</code></pre>
+
+  <dl class="defs">
+    <dt>Daemon</dt>
+    <dd><code>src/daemon.ts</code> runs as a launchd agent. It reads the battery, asks the policy for a decision, and applies it. It writes <code>~/.chargeguard/status.json</code>. The status has a <code>trip</code> field for the next calendar trip.</dd>
+    <dt>Policy</dt>
+    <dd><code>src/policy.ts</code> is a pure function. It takes the battery data, the config, the state, and the time, and it returns the target and the mode. Tests cover it.</dd>
+    <dt>Place</dt>
+    <dd>ChargeGuard reads the MAC address of the default gateway with <code>route</code> and <code>arp</code>.</dd>
+    <dt>Charge limit</dt>
+    <dd>ChargeGuard sets the native macOS charge limit. macOS keeps the limit, also when ChargeGuard does not run.</dd>
+    <dt>Hardware writes</dt>
+    <dd>One root helper, <code>cg-helper</code>, does 4 jobs: limit, adapter on or off, LED, and Low Power Mode. A sudoers rule allows only this helper, with no password.</dd>
+    <dt>Calendar trips</dt>
+    <dd><code>scripts/cg-calendar.js</code> reads the calendar and asks Apple Maps for the drive time. It writes <code>~/.chargeguard/trips.json</code>. The daemon reads the trips.</dd>
+    <dt>Widget</dt>
+    <dd><code>widget/standalone/host.js</code> opens a clear window below normal windows. The widget needs no network.</dd>
+  </dl>
+
+  <h3 id="files">Files in <code>~/.chargeguard</code></h3>
+  <div class="scroll" role="region" aria-label="Files" tabindex="0">
+    <table>
+      <caption>Files that ChargeGuard writes</caption>
+      <thead><tr><th>File</th><th>Written by</th><th>Content</th></tr></thead>
+      <tbody>
+        <tr><td><code>config.json</code></td><td><code>cg</code> command</td><td>Your settings.</td></tr>
+        <tr><td><code>status.json</code></td><td>Daemon</td><td>The state now. The widget, the menu bar, and <code>cg</code> read it. The UI shows it as stale after 90 s.</td></tr>
+        <tr><td><code>trips.json</code></td><td>Calendar script</td><td>The calendar trips and the calendar access state.</td></tr>
+        <tr><td><code>state.json</code></td><td>Daemon</td><td>Runtime state that the policy keeps between ticks.</td></tr>
+        <tr><td><code>install.log</code></td><td>Installer</td><td>The full output of the install steps.</td></tr>
+        <tr><td><code>chargeguard.log</code></td><td>Daemon</td><td>The daemon log.</td></tr>
+        <tr><td><code>kick</code></td><td><code>cg</code> command</td><td>A signal file. The daemon checks the state when this file changes.</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p class="src-note">Source: README.md, section How it works. src/types.ts, PATHS and Status. src/cli.ts, readStatus and touchKick. packaging/installer.applescript.</p>
+</section>
+
+<!-- 8 -->
+<section id="helper" aria-labelledby="helper-h">
+  <h2 id="helper-h"><span class="num">8</span>The root helper</h2>
+  <p>The script <code>scripts/cg-helper</code> is the only part that runs as root. The installer puts it at <code>/usr/local/libexec/chargeguard/cg-helper</code>. The daemon calls it with <code>sudo -n</code>. The helper must run as root and must get exactly two arguments. It validates every argument. It runs nothing else.</p>
+
+  <div class="scroll" role="region" aria-label="Helper commands" tabindex="0">
+    <table class="wide">
+      <caption>Commands that <code>cg-helper</code> accepts</caption>
+      <thead><tr><th>Command</th><th>Allowed values</th><th>Action</th></tr></thead>
+      <tbody>
+        <tr>
+          <td><code>limit</code></td>
+          <td>An integer from 10 to 100</td>
+          <td>Writes <code>MCLFeatureState</code> 1 and <code>mclLimitValue</code> N in the domain <code>com.apple.smartcharging.topoffprotection</code>. Then it sends the notice <code>com.apple.smartcharging.defaultschanged</code>.</td>
+        </tr>
+        <tr>
+          <td><code>adapter</code></td>
+          <td><code>on</code> or <code>off</code></td>
+          <td>Writes the SMC key <code>CHIE</code>: <code>00</code> for on, <code>08</code> for off.</td>
+        </tr>
+        <tr>
+          <td><code>led</code></td>
+          <td><code>system</code>, <code>off</code>, <code>green</code>, or <code>orange</code></td>
+          <td>Writes the SMC key <code>ACLC</code>: <code>00</code>, <code>01</code>, <code>03</code>, or <code>04</code>.</td>
+        </tr>
+        <tr>
+          <td><code>lowpower</code></td>
+          <td><code>0</code> or <code>1</code></td>
+          <td>Runs <code>pmset -a lowpowermode</code> with the value.</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3 id="helper-100">Limit 100 lifts the macOS limit</h3>
+  <p>The command <code>limit 100</code> sets <code>MCLFeatureState</code> to 1 and <code>mclLimitValue</code> to 100. A limit of 100% is not a real limit. The script comment says that <code>MCLFeatureState</code> 0 did not lift the limit. This fix is in version 0.2.0. A top-up to 100% and the uninstaller choice <kbd>Charge to 100%</kbd> use it.</p>
+
+  <h3 id="helper-safe">Safeguards in the installer</h3>
+  <ul>
+    <li><strong>Sudoers rule.</strong> The file is <code>/etc/sudoers.d/chargeguard</code>. Mode 440, owner root. It holds one line: <code>&lt;user&gt; ALL=(root) NOPASSWD: /usr/local/libexec/chargeguard/cg-helper</code>. The rule covers only this helper. <code>visudo -cf</code> checks the rule before the installer puts it in place.</li>
+    <li><strong>SHA-256 of smc.</strong> <code>scripts/install-root.sh</code> compares the <code>smc</code> binary with this hash: <code>e3b4392c966dee700f3e1d6cc3812c0d487954c3d6d77b91f521a9590aadae44</code>. It stops if the hash does not match.</li>
+    <li><strong>/usr/local check.</strong> If <code>/usr/local</code> or <code>/usr/local/libexec</code> exists, the owner must be root. Group and others must not be able to write to it. If they can, the script stops. If a user process can write to the folder, it can replace <code>cg-helper</code> and get root.</li>
+    <li><strong>Quarantine flag.</strong> The script removes the download flag from <code>smc</code> and <code>cg-helper</code>. Then it runs <code>smc</code> one time to test it.</li>
+  </ul>
+  <p class="src-note">Source: scripts/cg-helper. scripts/install-root.sh, steps 2 to 6. Release notes for v0.2.0 and v0.1.0.</p>
+</section>
+
+<!-- 9 -->
+<section id="install" aria-labelledby="install-h">
+  <h2 id="install-h"><span class="num">9</span>Install</h2>
+  <h3 id="requirements">Requirements</h3>
+  <ul>
+    <li>A Mac with Apple silicon, M1 or later.</li>
+    <li>A macOS version with the native charge limit. The command is <code>pmset -g battlimit</code>. The installer checks this.</li>
+    <li>An admin account. The installer asks for the password one time.</li>
+  </ul>
+
+  <h3 id="install-steps">Steps</h3>
+  <ol>
+    <li>Download <code>ChargeGuard-0.2.0.dmg</code> from the <a href="https://github.com/adhityaranggap/ChargeGuard/releases/download/v0.2.0/ChargeGuard-0.2.0.dmg">release page</a>.</li>
+    <li>Open the disk image. Double-click <kbd>Install ChargeGuard</kbd>.</li>
+    <li>If macOS says that it cannot check the app, click <kbd>Done</kbd>. Open <kbd>System Settings</kbd> and then <kbd>Privacy &amp; Security</kbd>. Scroll down and click <kbd>Open Anyway</kbd>. The app is not signed with an Apple developer account. That is why macOS asks.</li>
+    <li>Click <kbd>Install</kbd>, and type your Mac password.</li>
+    <li>For calendar trips, allow Calendar access when macOS asks.</li>
+  </ol>
+  <p>The installer copies ChargeGuard to <code>~/.chargeguard</code>. It starts two launchd agents: the daemon and the widget. You do not need Terminal, Homebrew, or Bun. The disk image includes them.</p>
+
+  <h3 id="install-errors">If a step fails</h3>
+  <p>The installer shows the step, a fix, and a <kbd>Show Log</kbd> button. The log is <code>~/.chargeguard/install.log</code>.</p>
+  <dl class="defs">
+    <dt>"smc Not Opened" or "Apple could not verify smc"</dt>
+    <dd>Click <kbd>Done</kbd>, and open <kbd>Install ChargeGuard</kbd> again. Version 0.1.1 and later remove the download flag from <code>smc</code>, so macOS does not block it. Open the new installer to repair an older install.</dd>
+    <dt>"Install ChargeGuard Not Opened"</dt>
+    <dd>Do install step 3 again.</dd>
+    <dt>You did not give the password</dt>
+    <dd>Open <kbd>Install ChargeGuard</kbd> again.</dd>
+  </dl>
+
+  <h3 id="first-setup">First setup</h3>
+  <ol>
+    <li>Find the widget at the bottom left of the screen.</li>
+    <li>Click the gear on the widget. The Settings panel opens.</li>
+    <li>At home, click <kbd>Use current Wi-Fi</kbd> next to <kbd>Home</kbd>.</li>
+    <li>At the office, click <kbd>Use current Wi-Fi</kbd> next to <kbd>Office</kbd>.</li>
+  </ol>
+  <p>On a network that you did not save, the place is Away, and the Mac charges to 100%.</p>
+
+  <h3 id="install-update">Update from version 0.1.x</h3>
+  <p>Open <kbd>Install ChargeGuard</kbd> from the new disk image. This step is necessary, because the fix is in the root helper. Your settings stay.</p>
+
+  <h3 id="install-optional">Optional parts</h3>
+  <ul>
+    <li><strong>Menu bar icon:</strong> install SwiftBar, then install ChargeGuard again.</li>
+    <li><strong>Stop charging while the Mac sleeps:</strong> install sleepwatcher with Homebrew, then install ChargeGuard again.</li>
+  </ul>
+  <p class="src-note">Source: README.md, sections Requirements, Install, and First setup. packaging/README.txt. packaging/installer.applescript. Release notes for v0.1.1 and v0.2.0.</p>
+</section>
+
+<!-- 10 -->
+<section id="uninstall" aria-labelledby="uninstall-h">
+  <h2 id="uninstall-h"><span class="num">10</span>Uninstall</h2>
+  <p>Double-click <kbd>Uninstall ChargeGuard</kbd> in the disk image. Do install step 3 again if macOS asks. The dialog has two choices for the charge limit that macOS keeps.</p>
+  <div class="scroll" role="region" aria-label="Uninstall choices" tabindex="0">
+    <table>
+      <caption>Uninstall choices</caption>
+      <thead><tr><th>Choice</th><th>Result</th></tr></thead>
+      <tbody>
+        <tr><td><kbd>Keep the limit</kbd></td><td>macOS keeps the charge limit that is set now.</td></tr>
+        <tr><td><kbd>Charge to 100%</kbd></td><td>The uninstaller runs <code>cg-helper limit 100</code> before it removes the helper. This lifts the macOS limit. It works from version 0.2.0.</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p>The uninstaller does these jobs.</p>
+  <ul>
+    <li>It turns the adapter on and sets the LED to the system mode.</li>
+    <li>It stops the daemon and the widget agents, and removes their launchd files.</li>
+    <li>It removes the Übersicht widget link and the SwiftBar plugin link.</li>
+    <li>It removes the <code>cg</code> lines from <code>~/.sleep</code> and <code>~/.wakeup</code>.</li>
+    <li>It removes <code>~/.chargeguard</code>, which holds your config, state, and logs.</li>
+    <li>With administrator rights, it removes <code>/usr/local/libexec/chargeguard</code> and <code>/etc/sudoers.d/chargeguard</code>.</li>
+  </ul>
+  <p class="src-note">Source: packaging/uninstaller.applescript. scripts/uninstall.sh. README.md, section Uninstall.</p>
+</section>
+
+<!-- 11 -->
+<section id="build" aria-labelledby="build-h">
+  <h2 id="build-h"><span class="num">11</span>Build from source</h2>
+  <p>You need <a href="https://bun.sh">Bun</a> 1.2 or later. You need an Apple silicon Mac for the disk image.</p>
+<pre><code>git clone https://github.com/adhityaranggap/ChargeGuard.git
+cd ChargeGuard
+bun test
+bash scripts/install.sh
+sudo SMC_SRC=/path/to/smc bash scripts/install-root.sh</code></pre>
+  <p>Make the disk image:</p>
+<pre><code>bash packaging/make-dmg.sh 0.1.0</code></pre>
+  <p>The script writes <code>dist/ChargeGuard-0.1.0.dmg</code>. It bundles Bun from <code>~/.bun/bin/bun</code> and the installed <code>smc</code>. Set <code>BUN_SRC</code> and <code>SMC_SRC</code> to use other files. Use another version number to make another version.</p>
+  <p class="src-note">Source: README.md, section Build from source.</p>
+</section>
+
+<!-- 12 -->
+<section id="releases" aria-labelledby="releases-h">
+  <h2 id="releases-h"><span class="num">12</span>Releases</h2>
+  <p>All releases are on the <a href="https://github.com/adhityaranggap/ChargeGuard/releases">GitHub releases page</a>. All three are beta releases.</p>
+
+  <h3 id="v020"><a href="https://github.com/adhityaranggap/ChargeGuard/releases/tag/v0.2.0">0.2.0</a>, 2026-11-14</h3>
+  <h4>New</h4>
+  <ul>
+    <li>Calendar trips. ChargeGuard reads your calendar meetings that have a physical location. Apple Maps gives the drive time from your Home or Office address. ChargeGuard then charges to 100% before you must leave.</li>
+    <li>The feature is off by default. Online meetings, all-day events, and events with no location are skipped.</li>
+    <li><code>cg trips</code> shows the next trips and the computed times.</li>
+    <li>The charge-time estimate learns the real charge rate of your Mac.</li>
+  </ul>
+  <h4>Fixed</h4>
+  <ul>
+    <li>A top-up to 100% now lifts the macOS charge limit. Before, macOS kept the old limit, so office top-ups did not charge past it.</li>
+    <li>The <kbd>Charge to 100%</kbd> choice of the uninstaller now works for the same reason.</li>
+  </ul>
+  <p>Update from 0.1.x: open <kbd>Install ChargeGuard</kbd> from the new disk image.</p>
+
+  <h3 id="v011"><a href="https://github.com/adhityaranggap/ChargeGuard/releases/tag/v0.1.1">0.1.1</a>, 2026-11-11</h3>
+  <h4>Fixed</h4>
+  <ul>
+    <li>macOS no longer blocks the <code>smc</code> tool with "smc Not Opened" or "Apple could not verify smc". The installer removes the download flag from <code>smc</code> and tests it.</li>
+    <li>If a step fails, the installer shows the step, a fix, and a <kbd>Show Log</kbd> button. The log is <code>~/.chargeguard/install.log</code>.</li>
+    <li>The installer tests the battery helper before it reports success.</li>
+    <li>The widget shows plain messages that tell you to open the installer again.</li>
+  </ul>
+
+  <h3 id="v010"><a href="https://github.com/adhityaranggap/ChargeGuard/releases/tag/v0.1.0">0.1.0</a>, 2026-11-11</h3>
+  <ul>
+    <li>First release. ChargeGuard holds the battery at 80% at Home and at the Office, and charges to 100% at other places.</li>
+    <li>It needs a Mac with Apple silicon, a macOS version with the native charge limit, and an admin account.</li>
+    <li>The installer puts a small root helper in <code>/usr/local/libexec/chargeguard</code>. It also adds a sudoers rule for that helper only. The uninstaller removes both.</li>
+    <li>The disk image includes Bun, MIT license, and the <code>smc</code> tool from the battery project, GNU GPL.</li>
+  </ul>
+  <p class="src-note">Source: GitHub release notes for v0.2.0, v0.1.1, and v0.1.0.</p>
+</section>
+
+<!-- 13 -->
+<section id="license" aria-labelledby="license-h">
+  <h2 id="license-h"><span class="num">13</span>License</h2>
+  <p>ChargeGuard is free software under the <a href="https://github.com/adhityaranggap/ChargeGuard/blob/main/LICENSE">GNU General Public License v3.0</a>. You can copy, change, and share it. If you share a changed version, you must share its source code under the same license.</p>
+  <p>ChargeGuard comes with no warranty. It changes how your Mac charges. Use it at your own risk.</p>
+
+  <h3 id="third-party">Third-party parts</h3>
+  <ul>
+    <li><a href="https://github.com/oven-sh/bun">Bun</a>, MIT license. The disk image includes it.</li>
+    <li><code>smc</code> from the <a href="https://github.com/actuallymentor/battery">battery</a> project, built from <a href="https://github.com/hholtmann/smcFanControl">smcFanControl</a>. GNU GPL. The disk image includes it.</li>
+    <li><a href="https://github.com/facebook/react">React</a> 18.3.1 and <a href="https://github.com/babel/babel">Babel standalone</a> 7.24.7, MIT license. They are in <code>widget/standalone/vendor</code>.</li>
+  </ul>
+</section>
+
+</main>
+</div>
+</div>
+
+<footer>
+  <div class="frame">
+    <p>ChargeGuard is free software under the GNU General Public License v3.0. It comes with no warranty.</p>
+    <p><a href="https://github.com/adhityaranggap/ChargeGuard">Source code</a> and <a href="https://github.com/adhityaranggap/ChargeGuard/releases">releases</a> are on GitHub.</p>
+  </div>
+</footer>
+</body>
+</html>
