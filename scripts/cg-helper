@@ -22,12 +22,9 @@ case "$cmd" in
     [[ "$arg" =~ ^[0-9]{2,3}$ ]] || die "limit must be an integer"
     n=$((10#$arg))
     { [ "$n" -ge 10 ] && [ "$n" -le 100 ]; } || die "limit must be 10..100"
-    if [ "$n" -eq 100 ]; then
-      defaults write "$DOM" MCLFeatureState -int 0
-    else
-      defaults write "$DOM" MCLFeatureState -int 1
-      defaults write "$DOM" mclLimitValue -int "$n"
-    fi
+    # 100 is a limit at 100%, so no real limit. MCLFeatureState 0 did not lift the limit.
+    defaults write "$DOM" MCLFeatureState -int 1
+    defaults write "$DOM" mclLimitValue -int "$n"
     notifyutil -p "$NOTE"
     ;;
   adapter)

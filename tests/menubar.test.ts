@@ -34,6 +34,7 @@ function status(over: { snap?: Partial<Snapshot>; dec?: Partial<Decision>; cfg?:
     placeLabel: "Home",
     office: { topupStart: null, end: null, graceEnd: null, etaMin: null, tooSlow: false },
     next: over.next ?? null,
+    trip: null,
     health: { daemon: true, smc: true, backend: "native", appliedLimit: 80, helper: true, tempKey: "TB0T", lastError: null },
   };
 }

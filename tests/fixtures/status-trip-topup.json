@@ -1,0 +1,170 @@
+{
+  "version": 1,
+  "updatedAt": "2026-11-11T12:30:00+07:00",
+  "snapshot": {
+    "percent": 50,
+    "ac": true,
+    "charging": true,
+    "tempC": 31.0,
+    "clamshell": false,
+    "routerMac": "9c:71:3a:40:db:9f",
+    "gatewayIp": "192.168.100.1",
+    "adapterWatts": 65,
+    "healthPct": 100,
+    "cycleCount": 2,
+    "minutesToEmpty": null,
+    "minutesToFull": 60,
+    "batteryWatts": 36.0,
+    "sleeping": false
+  },
+  "decision": {
+    "nativeLimit": 100,
+    "adapter": true,
+    "led": "orange",
+    "lowPower": null,
+    "preventSleep": false,
+    "target": 100,
+    "place": "home",
+    "mode": "topup",
+    "reason": "trip-topup",
+    "summary": "Charging to 100% before you leave at 13:20 for Client visit.",
+    "notify": []
+  },
+  "state": {
+    "override": null,
+    "sailing": false,
+    "heatBlocked": false,
+    "lastAc": true,
+    "lastPlace": "home",
+    "lastPlugAt": "2026-11-11T08:05:00+07:00",
+    "lastUnplugAt": null,
+    "sensorFailures": 0,
+    "firedRules": [],
+    "officeTopupNotified": null,
+    "tripTopup": {
+      "id": "t1",
+      "until": "2026-11-11T13:50:00+07:00"
+    },
+    "tripTopupNotified": "t1",
+    "lastChargeWatts": 36.0
+  },
+  "config": {
+    "version": 1,
+    "limit": 80,
+    "sail": 5,
+    "awayLimit": 100,
+    "places": {
+      "home": {
+        "label": "Home",
+        "routers": [
+          "9c:71:3a:40:db:9f"
+        ],
+        "limit": null,
+        "address": "Jl. Sudirman 1, Jakarta"
+      },
+      "office": {
+        "label": "Office",
+        "routers": [
+          "3c:84:6a:12:ab:cd"
+        ],
+        "limit": null,
+        "address": null
+      }
+    },
+    "officeHours": {
+      "enabled": true,
+      "days": [
+        1,
+        2,
+        3,
+        4,
+        5
+      ],
+      "start": "08:00",
+      "end": "17:00",
+      "leadMin": 90,
+      "graceMin": 120
+    },
+    "heat": {
+      "enabled": true,
+      "maxC": 35,
+      "resumeC": 32
+    },
+    "autoDischarge": false,
+    "dischargeInClamshell": false,
+    "stopChargingWhenSleeping": true,
+    "sleepControl": true,
+    "lowPower": {
+      "enabled": false,
+      "belowPct": 20
+    },
+    "magsafeLed": true,
+    "schedule": [
+      {
+        "id": "r1",
+        "enabled": true,
+        "days": [
+          1,
+          2
+        ],
+        "time": "06:30",
+        "action": {
+          "kind": "topup"
+        }
+      }
+    ],
+    "notifications": {},
+    "menubar": {
+      "icon": "battery",
+      "showPercent": true,
+      "sections": [
+        "status",
+        "place",
+        "limit",
+        "actions",
+        "officeHours",
+        "schedule",
+        "settings"
+      ]
+    },
+    "lastCalibration": "2026-11-02",
+    "calendar": {
+      "enabled": true,
+      "arriveBufferMin": 10,
+      "fallbackTravelMin": 45,
+      "graceMin": 30,
+      "lookaheadH": 24,
+      "minTravelMin": 10
+    }
+  },
+  "placeLabel": "Home",
+  "office": {
+    "topupStart": "2026-11-11T15:30:00+07:00",
+    "end": "2026-11-11T17:00:00+07:00",
+    "graceEnd": "2026-11-11T19:00:00+07:00",
+    "etaMin": 60,
+    "tooSlow": false
+  },
+  "next": "Full by about 13:30. Leave 13:20 for Client visit.",
+  "trip": {
+    "id": "t1",
+    "title": "Client visit",
+    "location": "Jl. Sudirman 1, Jakarta",
+    "start": "2026-11-11T14:00:00+07:00",
+    "leaveAt": "2026-11-11T13:20:00+07:00",
+    "topupStart": "2026-11-11T12:08:00+07:00",
+    "travelMin": 30,
+    "travelEstimated": false,
+    "chargeMin": 72,
+    "tooLate": false
+  },
+  "health": {
+    "daemon": true,
+    "smc": true,
+    "backend": "native",
+    "appliedLimit": 80,
+    "helper": true,
+    "tempKey": "TB0T",
+    "lastError": null
+  }
+}

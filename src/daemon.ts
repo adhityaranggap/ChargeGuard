@@ -3,16 +3,16 @@ import {
   existsSync, mkdirSync, readFileSync, renameSync, statSync, unlinkSync, watch, writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
-import { DEFAULT_CONFIG, DEFAULT_STATE, configDir, loadConfig, loadState, saveConfig, saveState } from "./config";
+import { DEFAULT_CONFIG, DEFAULT_STATE, configDir, loadConfig, loadState, loadTrips, saveConfig, saveState } from "./config";
 import { helperAvailable, readAppliedLimit, setAdapter, setLed, setLimit, setLowPower } from "./helper";
-import { decide, nextChange, officeWindow } from "./policy";
+import { decide, nextChange, officeWindow, tripWindow } from "./policy";
 import { networkInterfaces } from "node:os";
 import { EMPTY_NET_CACHE, needRouterRead, netSignature, readRouter } from "./net";
 import type { NetCache, RouterInfo, TickReason } from "./net";
 import { readAcFast, readSnapshot } from "./sensors";
 import { SMC_PATH, getTempKey } from "./smc";
 import { PATHS } from "./types";
-import type { Config, Decision, Led, NotifyMessage, OfficeWindow, Override, RuntimeState, Snapshot, Status } from "./types";
+import type { Config, Decision, Led, NotifyMessage, OfficeWindow, Override, RuntimeState, Snapshot, Status, Trip, TripWindow } from "./types";
 
 const FULL_TICK_MS = 30_000;
 const FAST_POLL_MS = 3_000;
@@ -137,6 +137,9 @@ export async function runDaemon(): Promise<void> {
   let lastStatus: Status | null = null;
   let caffeinate: ReturnType<typeof Bun.spawn> | null = null;
   let kickTimer: ReturnType<typeof setTimeout> | null = null;
+  // Calendar trips. The daemon reads trips.json on each full tick and keeps the list between them.
+  let trips: Trip[] = [];
+  let lastTripsKey = "";
 
   const kickMtime = (): number => {
     try { return statSync(kickPath).mtimeMs; } catch { return 0; }
@@ -221,12 +224,30 @@ export async function runDaemon(): Promise<void> {
     setErr(err);
   }
 
+  // Read trips.json. Call it on a full tick only. The fast poll uses the cached list.
+  function refreshTrips(nowDate: Date): void {
+    let key = "off";
+    if (!cfg.calendar.enabled) {
+      trips = [];
+    } else {
+      const r = loadTrips(dir, nowDate);
+      trips = r.trips;
+      key = r.access === "granted" ? `${r.trips.length}` : `access ${r.access ?? "unknown"}`;
+    }
+    if (key === lastTripsKey) return;
+    lastTripsKey = key;
+    if (key === "off") return;
+    log(key.startsWith("access") ? `Calendar: ${key}.` : `Calendar: ${key} ${key === "1" ? "trip" : "trips"}.`);
+  }
+
   function buildStatus(snap: Snapshot, d: Decision, st: RuntimeState, daemonUp: boolean, nowDate: Date): Status {
     let office: OfficeWindow;
     let next: string | null = null;
+    let trip: TripWindow | null = null;
     try {
-      office = officeWindow(snap, cfg, nowDate);
-      next = nextChange(snap, cfg, st, nowDate);
+      office = officeWindow(snap, cfg, nowDate, st.lastChargeWatts);
+      next = nextChange(snap, cfg, st, nowDate, trips);
+      trip = tripWindow(snap, cfg, trips, nowDate, st.lastChargeWatts);
     } catch (e) {
       office = { topupStart: null, end: null, graceEnd: null, etaMin: null, tooSlow: false };
       log(`Policy info failed: ${e}`);
@@ -243,6 +264,7 @@ export async function runDaemon(): Promise<void> {
       placeLabel,
       office,
       next,
+      trip,
       health: {
         daemon: daemonUp,
         smc: existsSync(SMC_PATH),
@@ -318,6 +340,8 @@ export async function runDaemon(): Promise<void> {
     handledKick = kickMtime();
     try { cfg = loadConfig(dir); } catch (e) { setErr(`Config error: ${e}`); }
     processInbox(nowDate);
+    // The fast poll (reason "ac" or "kick") reuses the cached trips.
+    if (reason === "start" || reason === "timer") refreshTrips(nowDate);
 
     let snap: Snapshot | null = null;
     try {
@@ -336,7 +360,7 @@ export async function runDaemon(): Promise<void> {
     state = { ...state, sensorFailures: 0 };
     lastAc = snap.ac;
 
-    const res = decide(snap, cfg, state, nowDate);
+    const res = decide(snap, cfg, state, nowDate, { trips });
     state = res.state;
     const d = res.decision;
     try { saveState(dir, state); } catch (e) { log(`State save failed: ${e}`); }

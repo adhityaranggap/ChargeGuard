@@ -30,6 +30,15 @@
       post({ type: "run", id: id, cmd: String(cmd) });
     });
   }
+  // probe(): host.js starts the calendar probe as a child process. It does not wait for the probe.
+  // It resolves with "started", "running", or "missing".
+  function probe() {
+    var id = ++nextId;
+    return new Promise(function (resolve, reject) {
+      waiting[id] = { resolve: resolve, reject: reject };
+      post({ type: "probe", id: id });
+    });
+  }
   window.__cgReply = function (id, ok, out) {
     var w = waiting[id];
     if (!w) return;
@@ -47,7 +56,7 @@
       filename: "index.jsx",
       presets: ["react", ["env", { modules: "commonjs", targets: { safari: "15" } }]],
     }).code;
-    var shim = { run: run, css: css, React: window.React };
+    var shim = { run: run, css: css, React: window.React, probe: probe };
     var mod = { exports: {} };
     new Function("module", "exports", "require", out)(mod, mod.exports, function (name) {
       if (name === "uebersicht") return shim;

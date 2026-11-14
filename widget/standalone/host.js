@@ -35,6 +35,40 @@ const sh = (cmd) => {
   return task.terminationStatus === 0 ? [true, text(out)] : [false, text(err) || "exit " + task.terminationStatus];
 };
 
+// Calendar probe. The host starts it as a child process and does not wait for it.
+// The host runs in the GUI session, so macOS can show the Calendar permission prompt.
+const PROBE_EVERY_MS = 10 * 60 * 1000;
+let probeTask = null;
+
+// True if the config says calendar trips are on. A missing or broken file means off.
+const calendarEnabled = () => {
+  try {
+    const cfg = JSON.parse(readText(HOME + "/.chargeguard/config.json"));
+    return !!(cfg && cfg.calendar && cfg.calendar.enabled === true);
+  } catch (e) {
+    return false;
+  }
+};
+
+// Starts one probe. Returns "started", "running", or "missing".
+// widget-dir is <app>/widget. The script is <app>/scripts/cg-calendar.js.
+const startProbe = (dir) => {
+  if (probeTask && probeTask.isRunning) return "running";
+  const script = dir.replace(/\/+$/, "").replace(/\/[^\/]*$/, "") + "/scripts/cg-calendar.js";
+  if (!$.NSFileManager.defaultManager.fileExistsAtPath($(script))) {
+    console.log(new Date().toISOString() + " probe script missing: " + script);
+    return "missing";
+  }
+  const task = $.NSTask.alloc.init;
+  task.launchPath = "/usr/bin/osascript";
+  task.arguments = $(["-l", "JavaScript", script]);
+  task.standardOutput = $.NSFileHandle.fileHandleWithNullDevice;
+  task.standardError = $.NSFileHandle.fileHandleWithNullDevice;
+  task.launch;
+  probeTask = task;
+  return "started";
+};
+
 function run(argv) {
   const dir = (argv && argv[0]) || HOME + "/.chargeguard/app/widget";
 
@@ -125,6 +159,13 @@ function run(argv) {
             if (m.type === "run") {
               const [ok, out] = sh(m.cmd);
               reply(m.id, ok, out);
+            } else if (m.type === "probe") {
+              // The Grant button. It runs the probe now, even if calendar trips are off.
+              try {
+                reply(m.id, true, startProbe(dir));
+              } catch (e) {
+                reply(m.id, false, String(e));
+              }
             } else if (m.type === "size") {
               size = { w: Math.max(m.w, 40), h: Math.max(m.h, 40) };
               place();
@@ -161,6 +202,7 @@ html,body{margin:0;background:transparent;overflow:hidden;font-family:-apple-sys
   // Bits 0 to 52 hold an exact value and include all event types.
   const ALL_EVENTS = Number.MAX_SAFE_INTEGER;
   let next = Date.now() + 5000;
+  let nextProbe = Date.now() + 3000; // once at start, then every 10 min
   for (;;) {
     const ev = app.nextEventMatchingMaskUntilDateInModeDequeue(
       ALL_EVENTS, $.NSDate.dateWithTimeIntervalSinceNow(1), $.NSDefaultRunLoopMode, true);
@@ -173,6 +215,14 @@ html,body{margin:0;background:transparent;overflow:hidden;font-family:-apple-sys
     if (Date.now() > next) {
       next = Date.now() + 5000;
       place();
+    }
+    if (Date.now() > nextProbe) {
+      nextProbe = Date.now() + PROBE_EVERY_MS;
+      try {
+        if (calendarEnabled()) startProbe(dir);
+      } catch (e) {
+        console.log("probe error: " + e);
+      }
     }
   }
 }

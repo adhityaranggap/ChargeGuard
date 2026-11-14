@@ -3,20 +3,23 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync, statSync, writeFil
 import { join } from "node:path";
 import { runDaemon } from "./daemon";
 import {
-  DEFAULT_CONFIG, configDir, formatClock, loadConfig, normalizeMac, parseClock, saveConfig, validateConfig,
+  DEFAULT_CONFIG, configDir, formatClock, loadConfig, loadTrips, normalizeMac, parseClock, saveConfig, validateConfig,
 } from "./config";
+import { tripTimes } from "./policy";
 import { HELPER_PATH, helperAvailable, readAppliedLimit, setAdapter } from "./helper";
 import { renderMenubar } from "./menubar";
 import { readRouter } from "./net";
 import { SMC_PATH, runCmd } from "./smc";
 import { PATHS } from "./types";
-import type { Config, NotifyEvent, PlaceId, PlaceMode, ScheduleAction, ScheduleRule, Status, Weekday } from "./types";
+import type {
+  Config, NotifyEvent, PlaceId, PlaceMode, ScheduleAction, ScheduleRule, Status, TripWindow, Weekday,
+} from "./types";
 
 // The Bun binary that runs this CLI. The installer can bundle Bun, so the path is not fixed.
 const BUN_PATH = process.execPath;
 const STALE_SEC = 90;
 const NOTIFY_EVENTS: NotifyEvent[] = [
-  "plug", "unplug", "officeTopupStart", "officeTopupDone", "heatPause", "calibrationStep", "dischargeDone",
+  "plug", "unplug", "officeTopupStart", "officeTopupDone", "tripTopupStart", "heatPause", "calibrationStep", "dischargeDone",
 ];
 const DAY_NAMES = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
@@ -50,6 +53,7 @@ Usage: cg <command> [options]
 Show
   status [--json]            Show the state now.
   doctor [--json]            Check the install.
+  trips [--json]             Show the calendar trips and the leave times.
   menubar                    Print SwiftBar text.
 
 Settings
@@ -60,7 +64,12 @@ Settings
                              sleepControl, lowPower.enabled, lowPower.belowPct, magsafeLed,
                              menubar.icon, menubar.showPercent, widget.corner,
                              widget.theme, widget.scale, widget.panelHeight,
-                             placeMode, notifications.<event>
+                             placeMode, notifications.<event>,
+                             calendar.enabled, calendar.arriveBufferMin,
+                             calendar.fallbackTravelMin, calendar.graceMin,
+                             calendar.lookaheadH, calendar.minTravelMin,
+                             places.home.address, places.office.address
+                             An address is text. Use "null" to clear it.
   place save home|office [--router <mac>]
   place forget home|office [--router <mac>]
   place list
@@ -68,6 +77,8 @@ Settings
                              Set the place by hand. "auto" uses the router again.
   office-hours on|off
   office-hours set [--start HH:MM] [--end HH:MM] [--lead N] [--grace N] [--days 1,2,3,4,5]
+  calendar on|off            Turn calendar trips on or off.
+  calendar refresh           Run the calendar probe now and show the result.
   schedule list
   schedule add --days 1,2 --time HH:MM --action topup|calibrate|limit:N|discharge:N
   schedule rm <id>
@@ -170,6 +181,97 @@ function parsePlaceId(s: string | undefined): PlaceId {
   throw new CliError("The place must be home or office.");
 }
 
+// ---- trips ----
+
+const clock = (iso: string): string => {
+  const d = new Date(iso);
+  return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+};
+
+/** "14:00", or "Wed 14:00" if the day is not today. */
+function clockDay(iso: string, now: Date): string {
+  const d = new Date(iso);
+  return d.toDateString() === now.toDateString() ? clock(iso) : `${DAY_NAMES[d.getDay()]} ${clock(iso)}`;
+}
+
+/** One line for cg status. */
+function tripShort(w: TripWindow): string {
+  const late = w.tooLate ? " Can miss 100% before the leave time." : "";
+  return `Meeting ${w.title} at ${clock(w.start)}. Leave ${clock(w.leaveAt)}.${late}`;
+}
+
+const CHARGE_GUESS_NOTE = "Charge time is a guess until the Mac charges one time.";
+
+const ACCESS_NOTE: Record<string, string> = {
+  granted: "granted",
+  denied: "denied. Open System Settings, Privacy and Security, Calendars.",
+  error: "The access request failed. Tap Grant calendar access in the widget, or run: cg calendar refresh",
+};
+
+function cmdTrips(json: boolean): number {
+  const now = new Date();
+  let cfg: Config;
+  try { cfg = loadConfig(dir()); } catch { cfg = validateConfig(structuredClone(DEFAULT_CONFIG)); }
+  const { access, trips } = loadTrips(dir(), now);
+  const { status } = readStatus();
+  const snap = status?.snapshot ?? null;
+  const rows = trips
+    .map((trip) => ({
+      trip,
+      window: snap ? tripTimes(snap, cfg, trip, now, status?.state.lastChargeWatts ?? null) : null,
+      near: trip.travelMin !== null && trip.travelMin < cfg.calendar.minTravelMin,
+    }))
+    .sort((a, b) => Date.parse(a.trip.start) - Date.parse(b.trip.start));
+  const next = status?.trip ?? null;
+  if (json) {
+    console.log(JSON.stringify({ enabled: cfg.calendar.enabled, access, trips: rows, next }, null, 2));
+    return 0;
+  }
+  const lines: string[] = [];
+  if (!cfg.calendar.enabled) lines.push("Calendar trips are off. Run: cg calendar on");
+  lines.push(`Calendar access: ${access === null ? "unknown. No fresh trips file. Run: cg calendar refresh" : ACCESS_NOTE[access]}`);
+  if (!snap && rows.length > 0) lines.push("No status yet. The daemon is not running, so the times are not known.");
+  if (access === "granted" && rows.length === 0) lines.push("No trips.");
+  for (const { trip, window: w, near } of rows) {
+    let l = `Meeting ${trip.title} at ${clockDay(trip.start, now)}, ${trip.location}.`;
+    if (w) {
+      l += ` Drive ${w.travelMin} min${w.travelEstimated ? " (estimate)" : ""}. Leave ${clockDay(w.leaveAt, now)}.`;
+      l += ` Top-up starts ${clockDay(w.topupStart, now)}.`;
+      if (near) l += " The place is near. No top-up.";
+      else if (w.tooLate) l += " Can miss 100% before the leave time.";
+    } else if (trip.travelMin !== null) l += ` Drive ${trip.travelMin} min.`;
+    if (next && next.id === trip.id) l += " (next)";
+    lines.push(l);
+  }
+  if (status?.state.lastChargeWatts == null) lines.push(CHARGE_GUESS_NOTE);
+  console.log(lines.join("\n"));
+  return 0;
+}
+
+async function cmdCalendar(args: string[]): Promise<void> {
+  const sub = args[0];
+  if (sub === "on" || sub === "off") {
+    editConfig((c) => { c.calendar.enabled = sub === "on"; });
+    console.log(`Calendar trips are ${sub}.`);
+    return;
+  }
+  if (sub !== "refresh") throw new CliError("Use: calendar on|off|refresh");
+  const script = join(import.meta.dir, "..", "scripts", "cg-calendar.js");
+  if (!existsSync(script)) throw new CliError(`The probe script is missing: ${script}`);
+  const proc = Bun.spawn(["/usr/bin/osascript", "-l", "JavaScript", script, "--print", "--fresh"], {
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  const [out, err, code] = await Promise.all([
+    new Response(proc.stdout).text(),
+    new Response(proc.stderr).text(),
+    proc.exited,
+  ]);
+  if (out.trim() !== "") console.log(out.trimEnd());
+  if (err.trim() !== "") console.error(err.trimEnd());
+  if (code !== 0) throw new CliError(`The probe failed. Exit code ${code}.`);
+}
+
 // ---- status ----
 
 function cmdStatus(json: boolean): number {
@@ -201,6 +303,8 @@ function cmdStatus(json: boolean): number {
     lines.push(`Override: ${o.kind}${o.target !== null ? " " + o.target : ""}${o.step ? " step " + o.step : ""}`);
   }
   if (status.next) lines.push(`Next: ${status.next}`);
+  if (status.trip) lines.push(`Trip: ${tripShort(status.trip)}`);
+  if (status.state.lastChargeWatts == null && (status.trip || status.config.calendar.enabled)) lines.push(CHARGE_GUESS_NOTE);
   if (status.health.lastError) lines.push(`Error: ${status.health.lastError}`);
   if (stale) lines.push(`The status is ${ageSec}s old. The daemon is not running.\nRun: launchctl kickstart -k gui/$(id -u)/com.chargeguard.daemon`);
   console.log(lines.join("\n"));
@@ -335,7 +439,7 @@ function cmdOfficeHours(args: string[], flags: Args["flags"]): void {
   console.log(`Office hours: ${o.start} to ${o.end}, days ${dayText(o.days)}, lead ${o.leadMin} min, grace ${o.graceMin} min.`);
 }
 
-type SetKind = "bool" | "num" | { enum: string[] };
+type SetKind = "bool" | "num" | "text?" | { enum: string[] };
 const SET_KEYS: Record<string, SetKind> = {
   placeMode: { enum: ["auto", "home", "office", "away"] },
   sail: "num",
@@ -356,6 +460,14 @@ const SET_KEYS: Record<string, SetKind> = {
   "widget.theme": { enum: ["auto", "dark", "light", "glass", "graphite", "midnight", "sand", "contrast"] },
   "widget.scale": "num",
   "widget.panelHeight": "num",
+  "calendar.enabled": "bool",
+  "calendar.arriveBufferMin": "num",
+  "calendar.fallbackTravelMin": "num",
+  "calendar.graceMin": "num",
+  "calendar.lookaheadH": "num",
+  "calendar.minTravelMin": "num",
+  "places.home.address": "text?",
+  "places.office.address": "text?",
 };
 
 function setPath(obj: Record<string, any>, path: string, value: unknown): void {
@@ -383,12 +495,17 @@ function cmdSet(key: string | undefined, raw: string | undefined): void {
     const n = Number(raw);
     if (raw.trim() === "" || !Number.isFinite(n)) throw new CliError("The value must be a number.");
     value = n;
+  } else if (kind === "text?") {
+    // Text with spaces works when the shell passes it as one argument. "null" or empty text clears it.
+    const t = raw.trim();
+    if (t.length > 200) throw new CliError("The text must be 200 characters or fewer.");
+    value = t === "" || t === "null" ? null : t;
   } else {
     if (!kind.enum.includes(raw)) throw new CliError(`The value must be one of: ${kind.enum.join(", ")}`);
     value = raw;
   }
   editConfig((c) => setPath(c as unknown as Record<string, any>, key, value));
-  console.log(`Set ${key} to ${raw}.`);
+  console.log(value === null ? `Cleared ${key}.` : `Set ${key} to ${raw}.`);
 }
 
 function parseAction(s: string | true | undefined): ScheduleAction {
@@ -474,6 +591,8 @@ async function main(): Promise<number> {
   switch (cmd) {
     case "status": return cmdStatus(json);
     case "doctor": return cmdDoctor(json);
+    case "trips": return cmdTrips(json);
+    case "calendar": await cmdCalendar(rest); return 0;
     case "limit": cmdLimit(rest[0]); return 0;
     case "place": cmdPlace(rest, flags); return 0;
     case "office-hours": cmdOfficeHours(rest, flags); return 0;

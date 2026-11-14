@@ -11,11 +11,13 @@ import {
   loadState,
   normalizeMac,
   parseClock,
+  parseTrips,
   saveConfig,
   saveState,
   validateConfig,
   validateState,
 } from "../src/config";
+import type { PlaceKind } from "../src/types";
 
 describe("normalizeMac", () => {
   test("accepts the normal colon form", () => {
@@ -250,6 +252,76 @@ describe("validateConfig", () => {
     expect(validateConfig({ widget: { panelHeight: "tall" } }).widget.panelHeight).toBe(85);
   });
 
+  test("calendar has the defaults and is off", () => {
+    expect(DEFAULT_CONFIG.calendar).toEqual({
+      enabled: false,
+      arriveBufferMin: 10,
+      fallbackTravelMin: 45,
+      graceMin: 30,
+      lookaheadH: 24,
+      minTravelMin: 10,
+    });
+    expect(validateConfig({}).calendar).toEqual(DEFAULT_CONFIG.calendar);
+    expect(validateConfig({ calendar: "on" }).calendar).toEqual(DEFAULT_CONFIG.calendar);
+  });
+
+  test("calendar numbers are clamped", () => {
+    const hi = validateConfig({
+      calendar: { enabled: true, arriveBufferMin: 999, fallbackTravelMin: 999, graceMin: 999, lookaheadH: 999, minTravelMin: 999 },
+    }).calendar;
+    expect(hi).toEqual({
+      enabled: true,
+      arriveBufferMin: 120,
+      fallbackTravelMin: 300,
+      graceMin: 240,
+      lookaheadH: 72,
+      minTravelMin: 120,
+    });
+    const lo = validateConfig({
+      calendar: { arriveBufferMin: -5, fallbackTravelMin: -5, graceMin: -5, lookaheadH: 0, minTravelMin: -5 },
+    }).calendar;
+    expect(lo).toEqual({
+      enabled: false,
+      arriveBufferMin: 0,
+      fallbackTravelMin: 0,
+      graceMin: 0,
+      lookaheadH: 1,
+      minTravelMin: 0,
+    });
+  });
+
+  test("bad calendar types use the defaults", () => {
+    const c = validateConfig({
+      calendar: { enabled: "yes", arriveBufferMin: "ten", fallbackTravelMin: NaN, graceMin: null, lookaheadH: {}, minTravelMin: "far" },
+    }).calendar;
+    expect(c).toEqual(DEFAULT_CONFIG.calendar);
+  });
+
+  test("tripTopupStart is a known notification event", () => {
+    expect(validateConfig({ notifications: { tripTopupStart: false } }).notifications).toEqual({ tripTopupStart: false });
+  });
+
+  test("place address is null by default and is trimmed", () => {
+    const d = validateConfig({});
+    expect(d.places.home.address).toBeNull();
+    expect(d.places.office.address).toBeNull();
+    const c = validateConfig({
+      places: { home: { address: "  Jl. Sudirman 1, Jakarta  " }, office: { address: "Jl. Gatot Subroto 9" } },
+    });
+    expect(c.places.home.address).toBe("Jl. Sudirman 1, Jakarta");
+    expect(c.places.office.address).toBe("Jl. Gatot Subroto 9");
+  });
+
+  test("place address with a bad value is null", () => {
+    const c = validateConfig({
+      places: { home: { address: "   " }, office: { address: "x".repeat(201) } },
+    });
+    expect(c.places.home.address).toBeNull();
+    expect(c.places.office.address).toBeNull();
+    expect(validateConfig({ places: { home: { address: 5 } } }).places.home.address).toBeNull();
+    expect(validateConfig({ places: { home: { address: "x".repeat(200) } } }).places.home.address).toBe("x".repeat(200));
+  });
+
   test("version is always 1 and bad lastCalibration is null", () => {
     expect(validateConfig({ version: 7 }).version).toBe(1);
     expect(validateConfig({ lastCalibration: "not a date" }).lastCalibration).toBeNull();
@@ -293,6 +365,40 @@ describe("validateState", () => {
       source: "user",
     });
     expect(validateState({ override: { kind: "bad", startedAt: "x" } }).override).toBeNull();
+  });
+
+  test("tripTopup is null by default and keeps a good value", () => {
+    expect(validateState({}).tripTopup).toBeNull();
+    expect(validateState({}).tripTopupNotified).toBeNull();
+    const s = validateState({
+      tripTopup: { id: "t1", until: "2026-11-11T13:50:00.000Z", extra: 1 },
+      tripTopupNotified: "t1",
+    });
+    expect(s.tripTopup).toEqual({ id: "t1", until: "2026-11-11T13:50:00.000Z" });
+    expect(s.tripTopupNotified).toBe("t1");
+  });
+
+  test("lastChargeWatts is null by default and keeps a finite value from 1 to 200", () => {
+    expect(validateState({}).lastChargeWatts).toBeNull();
+    expect(validateState({ lastChargeWatts: 8.9 }).lastChargeWatts).toBe(8.9);
+    expect(validateState({ lastChargeWatts: 1 }).lastChargeWatts).toBe(1);
+    expect(validateState({ lastChargeWatts: 200 }).lastChargeWatts).toBe(200);
+  });
+
+  test("a bad lastChargeWatts becomes null", () => {
+    expect(validateState({ lastChargeWatts: 0.5 }).lastChargeWatts).toBeNull();
+    expect(validateState({ lastChargeWatts: 201 }).lastChargeWatts).toBeNull();
+    expect(validateState({ lastChargeWatts: -3 }).lastChargeWatts).toBeNull();
+    expect(validateState({ lastChargeWatts: NaN }).lastChargeWatts).toBeNull();
+    expect(validateState({ lastChargeWatts: "9" }).lastChargeWatts).toBeNull();
+  });
+
+  test("a bad tripTopup becomes null", () => {
+    expect(validateState({ tripTopup: "t1" }).tripTopup).toBeNull();
+    expect(validateState({ tripTopup: { id: "", until: "2026-11-11T13:50:00.000Z" } }).tripTopup).toBeNull();
+    expect(validateState({ tripTopup: { id: "t1", until: "soon" } }).tripTopup).toBeNull();
+    expect(validateState({ tripTopup: { id: "t1" } }).tripTopup).toBeNull();
+    expect(validateState({ tripTopupNotified: 4 }).tripTopupNotified).toBeNull();
   });
 });
 
@@ -375,5 +481,53 @@ describe("files", () => {
     const c = loadConfig(dir);
     expect(c.limit).toBe(10);
     expect(c.sail).toBe(20);
+  });
+});
+
+describe("parseTrips", () => {
+  const now = new Date("2026-11-12T08:00:00Z");
+  const trip = {
+    id: "a1", title: "Client meeting", start: "2026-11-12T10:00:00Z", location: "Jl. Sudirman 1",
+    travelMin: 35, from: "home" as PlaceKind,
+  };
+  const file = (over: Record<string, unknown> = {}) => ({
+    version: 1, computedAt: "2026-11-12T07:55:00Z", access: "granted", trips: [trip], ...over,
+  });
+
+  test("keeps the trips of a valid file", () => {
+    const r = parseTrips(file(), now);
+    expect(r.access).toBe("granted");
+    expect(r.trips).toEqual([trip]);
+  });
+  test("keeps only the Trip fields", () => {
+    const r = parseTrips(file({ trips: [{ ...trip, travelAt: "x", resolved: "y" }] }), now);
+    expect(r.trips).toEqual([trip]);
+  });
+  test("accepts a null travel time", () => {
+    expect(parseTrips(file({ trips: [{ ...trip, travelMin: null }] }), now).trips.length).toBe(1);
+  });
+  test("returns no trips for a stale file", () => {
+    expect(parseTrips(file({ computedAt: "2026-11-12T07:00:00Z" }), now).trips).toEqual([]);
+  });
+  test("returns no trips when access is denied", () => {
+    const r = parseTrips(file({ access: "denied" }), now);
+    expect(r.access).toBe("denied");
+    expect(r.trips).toEqual([]);
+  });
+  test("drops a bad trip and keeps the good one", () => {
+    const bad = [
+      { ...trip, id: 5 },
+      { ...trip, start: "not a date" },
+      { ...trip, travelMin: -1 },
+      { ...trip, travelMin: Number.POSITIVE_INFINITY },
+      { ...trip, from: "mars" },
+      null,
+    ];
+    expect(parseTrips(file({ trips: [...bad, trip] }), now).trips).toEqual([trip]);
+  });
+  test("returns no trips for a missing or wrong shape", () => {
+    expect(parseTrips(undefined, now)).toEqual({ access: null, trips: [] });
+    expect(parseTrips("x", now).trips).toEqual([]);
+    expect(parseTrips(file({ trips: "no" }), now).trips).toEqual([]);
   });
 });

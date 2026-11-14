@@ -1,7 +1,7 @@
 import { describe, test, expect } from "bun:test";
 import { DEFAULT_CONFIG, DEFAULT_STATE } from "../src/config";
-import { baseTarget, decide, nextChange, officeWindow, resolvePlace } from "../src/policy";
-import type { Config, Override, RuntimeState, ScheduleRule, Snapshot } from "../src/types";
+import { baseTarget, decide, nextChange, officeWindow, resolvePlace, tripWindow } from "../src/policy";
+import type { Config, Override, RuntimeState, ScheduleRule, Snapshot, Trip } from "../src/types";
 
 const HOME = "9c:71:3a:40:db:9f";
 const OFFICE = "aa:bb:cc:dd:ee:01";
@@ -233,7 +233,7 @@ describe("office hours", () => {
 
   test("officeWindow marks a slow charger", () => {
     const w = officeWindow(snap({ percent: 80, batteryWatts: null, adapterWatts: 7 }), cfg(), wed(12));
-    expect(w.etaMin).toBe(206);
+    expect(w.etaMin).toBe(412);
     expect(w.tooSlow).toBe(true);
     const none = officeWindow(snap({ batteryWatts: null, adapterWatts: null }), cfg(), wed(12));
     expect(none.etaMin).toBeNull();
@@ -688,5 +688,330 @@ describe("nextChange", () => {
     });
     expect(nextChange(snap(), c, st(), wed(12))).toBe("Schedule: top-up at 18:00.");
     expect(nextChange(snap(), c, st(), wed(19))).toBeNull();
+  });
+});
+
+describe("calendar trips", () => {
+  // Percent 50 and 36 W give an ETA of 60 min. The charge time is 72 min with the 1.2 margin.
+  // Meeting 14:00, 30 min drive, 10 min buffer: leave 13:20, top-up starts 12:08.
+  const slow = { percent: 50, batteryWatts: 36 };
+  const calCfg = (over: (c: Config) => void = () => {}): Config =>
+    cfg((c) => {
+      c.calendar.enabled = true;
+      over(c);
+    });
+  const trip = (p: Partial<Trip> = {}): Trip => ({
+    id: "t1",
+    title: "Client visit",
+    start: wed(14).toISOString(),
+    location: "Jl. Sudirman 1",
+    travelMin: 30,
+    from: "home",
+    ...p,
+  });
+
+  test("tripWindow gives the leave time, the top-up start, and the charge time", () => {
+    const w = tripWindow(snap(slow), calCfg(), [trip()], wed(12));
+    expect(w).not.toBeNull();
+    expect(w?.id).toBe("t1");
+    expect(w?.title).toBe("Client visit");
+    expect(w?.location).toBe("Jl. Sudirman 1");
+    expect(w?.start).toBe(wed(14).toISOString());
+    expect(w?.leaveAt).toBe(wed(13, 20).toISOString());
+    expect(w?.topupStart).toBe(wed(12, 8).toISOString());
+    expect(w?.travelMin).toBe(30);
+    expect(w?.travelEstimated).toBe(false);
+    expect(w?.chargeMin).toBe(72);
+    expect(w?.tooLate).toBe(false);
+  });
+
+  test("a trip below minTravelMin gives no window and the target stays 80", () => {
+    const near = trip({ travelMin: 5 });
+    expect(tripWindow(snap(slow), calCfg(), [near], wed(12))).toBeNull();
+    const { decision, state } = decide(snap(slow), calCfg(), st(), wed(13), { trips: [near] });
+    expect(decision.target).toBe(80);
+    expect(state.tripTopup).toBeNull();
+    expect(nextChange(snap(slow), calCfg(), st(), wed(11), [near])).toBeNull();
+  });
+
+  test("a trip at minTravelMin gives a window", () => {
+    expect(tripWindow(snap(slow), calCfg(), [trip({ travelMin: 10 })], wed(12))?.travelMin).toBe(10);
+    expect(tripWindow(snap(slow), calCfg(), [trip({ travelMin: 9 })], wed(12))).toBeNull();
+  });
+
+  test("minTravelMin does not apply to a trip with no estimate", () => {
+    const c = calCfg((x) => {
+      x.calendar.minTravelMin = 60;
+    });
+    expect(tripWindow(snap(slow), c, [trip({ travelMin: null })], wed(12))?.travelEstimated).toBe(true);
+  });
+
+  test("a held battery uses the learned charge power for the top-up start", () => {
+    // Hold at 80%. Live power is 0. Charger 30 W. Learned power 8.9 W. Meeting 09:00, drive 25 min, buffer 10 min.
+    const t = trip({ start: wed(9).toISOString(), travelMin: 25 });
+    const held = snap({ percent: 80, charging: false, batteryWatts: 0, adapterWatts: 30 });
+    const w = tripWindow(held, calCfg(), [t], wed(5), 8.9);
+    expect(w?.leaveAt).toBe(wed(8, 25).toISOString());
+    expect(w?.chargeMin).toBe(117);
+    expect(w?.topupStart).toBe(wed(6, 28).toISOString());
+    const before = decide(held, calCfg(), st({ lastChargeWatts: 8.9 }), wed(6, 27), { trips: [t] });
+    expect(before.decision.target).toBe(80);
+    const at = decide(held, calCfg(), st({ lastChargeWatts: 8.9 }), wed(6, 28), { trips: [t] });
+    expect(at.decision.target).toBe(100);
+    expect(nextChange(held, calCfg(), st({ lastChargeWatts: 8.9 }), wed(5), [t])).toBe(
+      "Meeting Client visit at 09:00. Leave 08:25, 25 min drive. Top-up starts 06:28.",
+    );
+  });
+
+  test("without a learned charge power the charger power gives the estimate", () => {
+    const t = trip({ start: wed(9).toISOString(), travelMin: 25 });
+    const held = snap({ percent: 80, charging: false, batteryWatts: 0, adapterWatts: 30 });
+    const w = tripWindow(held, calCfg(), [t], wed(5));
+    // 30 W * 0.3 = 9 W. 14.4 Wh / 9 W = 96 min. With the 1.2 margin: 116 min.
+    expect(w?.chargeMin).toBe(116);
+    expect(w?.topupStart).toBe(wed(6, 29).toISOString());
+  });
+
+  test("the live charge power wins over the learned power", () => {
+    const t = trip({ start: wed(9).toISOString(), travelMin: 25 });
+    const live = snap({ percent: 80, charging: true, batteryWatts: 36, adapterWatts: 30 });
+    expect(tripWindow(live, calCfg(), [t], wed(5), 8.9)?.chargeMin).toBe(29);
+  });
+
+  test("decide learns the charge power while it charges and keeps it while it holds", () => {
+    const c = calCfg();
+    const first = decide(snap({ percent: 50, batteryWatts: 10 }), c, st(), wed(12));
+    expect(first.state.lastChargeWatts).toBe(10);
+    const second = decide(snap({ percent: 51, batteryWatts: 20 }), c, first.state, wed(12, 1));
+    expect(second.state.lastChargeWatts).toBeCloseTo(13, 6);
+    const held = decide(snap({ percent: 80, charging: false, batteryWatts: 0 }), c, second.state, wed(12, 2));
+    expect(held.state.lastChargeWatts).toBeCloseTo(13, 6);
+    const low = decide(snap({ percent: 60, batteryWatts: 0.5 }), c, second.state, wed(12, 3));
+    expect(low.state.lastChargeWatts).toBeCloseTo(13, 6);
+    const battery = decide(snap({ ac: false, charging: false, batteryWatts: -8 }), c, st({ lastChargeWatts: 9 }), wed(12));
+    expect(battery.state.lastChargeWatts).toBe(9);
+  });
+
+  test("tripWindow is null when the calendar is off or the list is empty", () => {
+    expect(tripWindow(snap(slow), cfg(), [trip()], wed(12))).toBeNull();
+    expect(tripWindow(snap(slow), calCfg(), [], wed(12))).toBeNull();
+  });
+
+  test("tripWindow picks the earliest trip and skips a trip that is past its grace time", () => {
+    const trips = [
+      trip({ id: "late", start: wed(18).toISOString() }),
+      trip({ id: "past", start: wed(9).toISOString() }),
+      trip({ id: "soon", start: wed(15).toISOString() }),
+    ];
+    expect(tripWindow(snap(slow), calCfg(), trips, wed(12))?.id).toBe("soon");
+    // "past" leaves at 08:20. Its grace time ends at 08:50.
+    expect(tripWindow(snap(slow), calCfg(), trips, wed(8, 49))?.id).toBe("past");
+  });
+
+  test("the target is 80 at 12:07 and 100 at 12:08", () => {
+    const c = calCfg();
+    const before = decide(snap(slow), c, st(), wed(12, 7), { trips: [trip()] });
+    expect(before.decision.target).toBe(80);
+    expect(before.decision.reason).toBe("limit");
+    expect(before.state.tripTopup).toBeNull();
+
+    const at = decide(snap(slow), c, st(), wed(12, 8), { trips: [trip()] });
+    expect(at.decision.target).toBe(100);
+    expect(at.decision.nativeLimit).toBe(100);
+    expect(at.decision.mode).toBe("topup");
+    expect(at.decision.reason).toBe("trip-topup");
+    expect(at.decision.led).toBe("orange");
+    expect(at.decision.summary).toBe("Charging to 100% before you leave at 13:20 for Client visit.");
+    expect(at.state.tripTopup).toEqual({ id: "t1", until: wed(13, 50).toISOString() });
+  });
+
+  test("the start text is sent once for each trip", () => {
+    const c = calCfg();
+    const first = decide(snap(slow), c, st(), wed(12, 8), { trips: [trip()] });
+    expect(first.decision.notify).toHaveLength(1);
+    expect(first.decision.notify[0]?.event).toBe("tripTopupStart");
+    expect(first.decision.notify[0]?.body).toBe(
+      "Trip top-up started. Charges to 100% before you leave at 13:20 for Client visit.",
+    );
+    expect(first.state.tripTopupNotified).toBe("t1");
+
+    const second = decide(snap(slow), c, first.state, wed(12, 9), { trips: [trip()] });
+    expect(second.decision.target).toBe(100);
+    expect(second.decision.notify).toHaveLength(0);
+  });
+
+  test("the start text can be turned off", () => {
+    const c = calCfg((x) => {
+      x.notifications = { tripTopupStart: false };
+    });
+    const { decision } = decide(snap(slow), c, st(), wed(12, 8), { trips: [trip()] });
+    expect(decision.target).toBe(100);
+    expect(decision.notify).toHaveLength(0);
+  });
+
+  test("a plug event during the top-up sends one text", () => {
+    const { decision, state } = decide(snap(slow), calCfg(), st({ lastAc: false }), wed(12, 30), { trips: [trip()] });
+    expect(decision.notify).toHaveLength(1);
+    expect(decision.notify[0]?.event).toBe("plug");
+    expect(decision.notify[0]?.body).toBe(
+      "Plugged in at Home. Charges to 100% before you leave at 13:20 for Client visit.",
+    );
+    expect(state.tripTopupNotified).toBe("t1");
+  });
+
+  test("the latch keeps the target at 100 after the ETA drops", () => {
+    const c = calCfg();
+    const first = decide(snap(slow), c, st(), wed(12, 8), { trips: [trip()] });
+    expect(first.decision.target).toBe(100);
+    // At 95% the ETA is 6 min. The new top-up start is 13:12. Without the latch the target would be 80.
+    const w = tripWindow(snap({ percent: 95, batteryWatts: 36 }), c, [trip()], wed(12, 20));
+    expect(w?.topupStart).toBe(wed(13, 12).toISOString());
+    const later = decide(snap({ percent: 95, batteryWatts: 36 }), c, first.state, wed(12, 20), { trips: [trip()] });
+    expect(later.decision.target).toBe(100);
+    expect(later.decision.reason).toBe("trip-topup");
+    expect(later.state.tripTopup?.id).toBe("t1");
+  });
+
+  test("the latch ends at the grace time", () => {
+    const c = calCfg();
+    const latch = st({ tripTopup: { id: "t1", until: wed(13, 50).toISOString() } });
+    const on = decide(snap(slow), c, latch, wed(13, 49), { trips: [trip()] });
+    expect(on.decision.target).toBe(100);
+    const off = decide(snap(slow), c, latch, wed(13, 50), { trips: [trip()] });
+    expect(off.decision.target).toBe(80);
+    expect(off.state.tripTopup).toBeNull();
+  });
+
+  test("the latch stays after an unplug", () => {
+    const latch = st({ tripTopup: { id: "t1", until: wed(13, 50).toISOString() } });
+    const { decision, state } = decide(snap({ ...slow, ac: false, charging: false }), calCfg(), latch, wed(12, 30), {
+      trips: [trip()],
+    });
+    expect(decision.mode).toBe("unplugged");
+    expect(state.tripTopup).toEqual({ id: "t1", until: wed(13, 50).toISOString() });
+  });
+
+  test("travelMin null uses the fallback of 45 min", () => {
+    const t = trip({ travelMin: null });
+    const w = tripWindow(snap(slow), calCfg(), [t], wed(11));
+    expect(w?.travelMin).toBe(45);
+    expect(w?.travelEstimated).toBe(true);
+    expect(w?.leaveAt).toBe(wed(13, 5).toISOString());
+    expect(w?.topupStart).toBe(wed(11, 53).toISOString());
+    expect(nextChange(snap(slow), calCfg(), st(), wed(11), [t])).toBe(
+      "Meeting Client visit at 14:00. Leave 13:05, about 45 min drive. Top-up starts 11:53.",
+    );
+  });
+
+  test("a top-up start in the past sets tooLate and the target is 100 at once", () => {
+    const c = calCfg();
+    const w = tripWindow(snap(slow), c, [trip()], wed(13));
+    expect(w?.tooLate).toBe(true);
+    const { decision } = decide(snap(slow), c, st(), wed(13), { trips: [trip()] });
+    expect(decision.target).toBe(100);
+    expect(decision.reason).toBe("trip-topup");
+  });
+
+  test("tooLate is false when the battery is full", () => {
+    const w = tripWindow(snap({ percent: 100, charging: false, batteryWatts: null }), calCfg(), [trip()], wed(13));
+    expect(w?.tooLate).toBe(false);
+  });
+
+  test("a pause override wins and keeps the latch", () => {
+    const latch = st({
+      override: ov({ kind: "pause" }),
+      tripTopup: { id: "t1", until: wed(13, 50).toISOString() },
+    });
+    const { decision, state } = decide(snap(slow), calCfg(), latch, wed(12, 30), { trips: [trip()] });
+    expect(decision.mode).toBe("paused");
+    expect(decision.reason).toBe("paused");
+    expect(decision.summary).toBe("ChargeGuard is paused. macOS charges normally.");
+    expect(decision.nativeLimit).toBe(100);
+    expect(state.override?.kind).toBe("pause");
+  });
+
+  test("a discharge override wins over the trip top-up", () => {
+    const { decision } = decide(
+      snap({ percent: 90, charging: false, batteryWatts: 36 }),
+      calCfg(),
+      st({ override: ov({ kind: "discharge", target: 50 }) }),
+      wed(13),
+      { trips: [trip()] },
+    );
+    expect(decision.mode).toBe("discharging");
+    expect(decision.reason).toBe("discharge");
+    expect(decision.adapter).toBe(false);
+  });
+
+  test("heat wins over the trip top-up", () => {
+    const { decision } = decide(snap({ ...slow, tempC: 40 }), calCfg(), st(), wed(12, 30), { trips: [trip()] });
+    expect(decision.mode).toBe("heat");
+    expect(decision.reason).toBe("heat");
+    expect(decision.nativeLimit).toBe(50);
+  });
+
+  test("a removed trip clears the latch and the target returns to the base", () => {
+    const latch = st({ tripTopup: { id: "t1", until: wed(13, 50).toISOString() } });
+    const { decision, state } = decide(snap(slow), calCfg(), latch, wed(12, 30), { trips: [] });
+    expect(state.tripTopup).toBeNull();
+    expect(decision.target).toBe(80);
+    expect(decision.reason).toBe("limit");
+  });
+
+  test("a call without ctx works and ignores trips", () => {
+    const latch = st({ tripTopup: { id: "t1", until: wed(13, 50).toISOString() } });
+    const { decision, state } = decide(snap(slow), calCfg(), latch, wed(12, 30));
+    expect(state.tripTopup).toBeNull();
+    expect(decision.target).toBe(80);
+  });
+
+  test("with the calendar off the window is null and the target is the limit", () => {
+    const { decision, state } = decide(snap(slow), cfg(), st(), wed(12, 30), { trips: [trip()] });
+    expect(decision.target).toBe(80);
+    expect(state.tripTopup).toBeNull();
+  });
+
+  test("with the calendar off a latch from before is cleared", () => {
+    const latch = st({ tripTopup: { id: "t1", until: wed(13, 50).toISOString() } });
+    const { decision, state } = decide(snap(slow), cfg(), latch, wed(12, 30), { trips: [trip()] });
+    expect(state.tripTopup).toBeNull();
+    expect(decision.target).toBe(80);
+  });
+
+  test("the trip top-up applies away from home and office", () => {
+    const { decision } = decide(snap({ ...slow, routerMac: ELSEWHERE }), calCfg(), st(), wed(12, 30), {
+      trips: [trip({ from: "away" })],
+    });
+    expect(decision.target).toBe(100);
+    expect(decision.reason).toBe("trip-topup");
+  });
+
+  test("nextChange before the top-up shows the meeting, the leave time, and the top-up start", () => {
+    expect(nextChange(snap(slow), calCfg(), st(), wed(11), [trip()])).toBe(
+      "Meeting Client visit at 14:00. Leave 13:20, 30 min drive. Top-up starts 12:08.",
+    );
+  });
+
+  test("nextChange after the top-up start shows the full time and the leave time", () => {
+    expect(nextChange(snap(slow), calCfg(), st(), wed(12, 30), [trip()])).toBe(
+      "Full by about 13:30. Leave 13:20 for Client visit.",
+    );
+  });
+
+  test("nextChange shows the trip before the office end and the office text after it", () => {
+    const office = snap({ routerMac: OFFICE, ...slow });
+    // Leave 13:20 is before the office end at 17:00.
+    expect(nextChange(office, calCfg(), st(), wed(11), [trip()])).toBe(
+      "Meeting Client visit at 14:00. Leave 13:20, 30 min drive. Top-up starts 12:08.",
+    );
+    // Leave 19:20 is after the office end at 17:00.
+    const late = trip({ start: wed(20).toISOString() });
+    expect(nextChange(office, calCfg(), st(), wed(14), [late])).toBe("Top-up starts 15:30. Full by about 17:00.");
+  });
+
+  test("nextChange without trips or with the calendar off keeps the old text", () => {
+    const office = snap({ routerMac: OFFICE, ...slow });
+    expect(nextChange(office, calCfg(), st(), wed(14), [])).toBe("Top-up starts 15:30. Full by about 17:00.");
+    expect(nextChange(office, cfg(), st(), wed(14), [trip()])).toBe("Top-up starts 15:30. Full by about 17:00.");
   });
 });
